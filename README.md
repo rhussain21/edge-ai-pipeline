@@ -1,1 +1,1 @@
-# edge-ai-pipeline
+# EDGE AI Pipeline - Work in Progress
