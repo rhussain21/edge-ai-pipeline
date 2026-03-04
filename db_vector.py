@@ -5,32 +5,17 @@ import numpy as np
 from typing import Optional, List, Dict, Union
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
+from dotenv import load_dotenv
 
 
 class VectorDB:
-    """
-    Simple FAISS-based vector database for semantic search.
-    
-    Unlike relational databases that store rows and columns,
-    vector databases store mathematical representations (embeddings)
-    of text for similarity search.
-    """
+    """FAISS-based vector database for semantic search."""
     
     def __init__(self, vector_dir="vectors", embedding_dim=384, model_name: str = "all-MiniLM-L6-v2", use_builtin_embeddings: bool = True):
-        """
-        Initialize vector database.
-        
-        Args:
-            vector_dir: Directory to store vector files
-            embedding_dim: Size of text embeddings (384 for MiniLM model)
-            model_name: SentenceTransformer model name (if using builtin embeddings)
-            use_builtin_embeddings: Whether to use built-in embedding model
-        """
         self.vector_dir = vector_dir
         self.embedding_dim = embedding_dim
         self.use_builtin_embeddings = use_builtin_embeddings
         
-        # Initialize embedding model if requested
         if self.use_builtin_embeddings:
             print(f"Loading embedding model: {model_name}...")
             self.model = SentenceTransformer(model_name)
@@ -39,31 +24,26 @@ class VectorDB:
         else:
             self.model = None
         
-        # Core components of vector database:
-        self.index = None           # FAISS index - like the "engine" for fast search
-        self.documents = []         # Original text content - like "rows" in RDB
-        self.metadata = []          # Extra info about each document - like "columns"
+        self.index = None
+        self.documents = []
+        self.metadata = []
         
-        # Ensure directory exists
         self._ensure_directory_exists()
         print(f"Vector database initialized at: {self.vector_dir}")
     
     def _ensure_directory_exists(self):
         """Create vector directory if it doesn't exist, with fallback."""
         try:
-            # Try to create the requested directory
             if not os.path.exists(self.vector_dir):
                 os.makedirs(self.vector_dir, exist_ok=True)
                 print(f"Created vector directory: {self.vector_dir}")
             
-            # Test if we can write to this location
             test_file = os.path.join(self.vector_dir, "test.tmp")
             with open(test_file, 'w') as f:
                 f.write('test')
             os.remove(test_file)
             
         except (PermissionError, OSError) as e:
-            # Fallback to default directory
             fallback_dir = "vectors_fallback"
             if not os.path.exists(fallback_dir):
                 os.makedirs(fallback_dir, exist_ok=True)
@@ -96,7 +76,6 @@ class VectorDB:
             self.add_documents(texts, metadata, vectors)
     
     def build_index(self, texts: List[str], metadata: List[Dict], vectors: Optional[np.ndarray] = None):
-    
         """Build FAISS index from scratch."""
         if vectors is None:
             if not self.use_builtin_embeddings:
@@ -105,15 +84,11 @@ class VectorDB:
         
         print(f"Building FAISS index for {len(texts)} documents...")
         
-        # Normalize for cosine similarity
         vectors = vectors.astype('float32')
         faiss.normalize_L2(vectors)
         
-        # Create and populate index
         self.index = faiss.IndexFlatIP(self.embedding_dim)
         self.index.add(vectors)
-        
-        # Store documents and metadata
         self.documents = texts
         self.metadata = metadata
         
@@ -132,14 +107,10 @@ class VectorDB:
         
         print(f"Adding {len(texts)} new documents to index...")
         
-        # Normalize for cosine similarity
         vectors = vectors.astype('float32')
         faiss.normalize_L2(vectors)
         
-        # Add to index
         self.index.add(vectors)
-        
-        # Store documents and metadata
         self.documents.extend(texts)
         self.metadata.extend(metadata)
         
@@ -150,23 +121,11 @@ class VectorDB:
         self.add_documents(documents, metadata, vectors)
     
     def search(self, query: Union[str, np.ndarray], top_k: int = 5, cosine_threshold: float = 0.3, adaptive: bool = True) -> List[Dict]:
-        """
-        Search for semantically similar documents using cosine similarity.
-        
-        Args:
-            query: Search query text OR pre-computed embedding vector
-            top_k: Number of results to return
-            cosine_threshold: Minimum cosine similarity to include
-            adaptive: If True, lower threshold slightly when no matches found
-        
-        Returns:
-            List of dicts with document, metadata, similarity, and index.
-        """
+        """Search for semantically similar documents."""
         if self.index is None or self.index.ntotal == 0:
             print("No vectors in index to search")
             return []
         
-        # Handle query text vs pre-computed vector
         if isinstance(query, str):
             if not self.use_builtin_embeddings:
                 raise ValueError("Cannot search with text when not using built-in embeddings. Provide embedding vector instead.")
@@ -175,14 +134,11 @@ class VectorDB:
         else:
             query_vector = query.reshape(1, -1)
         
-        # Normalize query vector
         query_vector = query_vector.astype('float32')
         faiss.normalize_L2(query_vector)
         
-        # Search the index
         similarities, indices = self.index.search(query_vector, min(top_k, self.index.ntotal))
         
-        # Format results
         results = []
         for sim, idx in zip(similarities[0], indices[0]):
             if idx != -1:
@@ -193,10 +149,8 @@ class VectorDB:
                     'index': int(idx)
                 })
         
-        # Filter by cosine threshold
         filtered = [r for r in results if r["similarity"] >= cosine_threshold]
         
-        # Adaptive fallback
         if not filtered and adaptive:
             relaxed = cosine_threshold * 0.75
             print(f"[DEBUG] No results above {cosine_threshold:.2f}, relaxing to {relaxed:.2f}")
@@ -209,20 +163,14 @@ class VectorDB:
         return filtered
     
     def save(self, filename="vectors"):
-        """
-        Save index and data to disk.
-        
-        This is like database backup - saves everything to files
-        """
+        """Save index and data to disk."""
         if self.index is None:
             print("No index to save")
-            return
+            return False
         
-        # Save FAISS index (the "engine")
         index_path = os.path.join(self.vector_dir, f"{filename}.faiss")
         faiss.write_index(self.index, index_path)
         
-        # Save documents and metadata (the "data")
         data_path = os.path.join(self.vector_dir, f"{filename}.pkl")
         with open(data_path, 'wb') as f:
             pickle.dump({
@@ -232,13 +180,10 @@ class VectorDB:
             }, f)
         
         print(f"Saved vector database to {index_path} and {data_path}")
+        return True
     
     def load(self, filename="vectors"):
-        """
-        Load index and data from disk.
-        
-        This is like database restore - loads everything from files
-        """
+        """Load index and data from disk."""
         index_path = os.path.join(self.vector_dir, f"{filename}.faiss")
         data_path = os.path.join(self.vector_dir, f"{filename}.pkl")
         
@@ -246,10 +191,8 @@ class VectorDB:
             print(f"Vector files not found: {filename}")
             return False
         
-        # Load FAISS index
         self.index = faiss.read_index(index_path)
         
-        # Load documents and metadata
         with open(data_path, 'rb') as f:
             data = pickle.load(f)
             self.documents = data['documents']
@@ -260,7 +203,7 @@ class VectorDB:
         return True
     
     def get_stats(self):
-        """Get database statistics - like SELECT COUNT(*) in SQL"""
+        """Get database statistics."""
         if self.index is None:
             return {"total_vectors": 0, "dimension": self.embedding_dim}
         
@@ -274,32 +217,20 @@ class VectorDB:
         }
     
     def cluster_documents(self, n_clusters: int = 4) -> Dict[int, List[str]]:
-        """
-        Group all indexed documents into N semantic clusters.
-        
-        Args:
-            n_clusters: Number of clusters to create
-            
-        Returns:
-            Dict of cluster_id -> list of document titles/summaries
-        """
+        """Group all indexed documents into N semantic clusters."""
         if self.index is None or not self.documents:
             raise ValueError("Index not built or empty")
         
         print(f"[DEBUG] Clustering {len(self.documents)} embeddings into {n_clusters} themes...")
         
-        # Reconstruct embeddings from FAISS index
         xb = np.zeros((self.index.ntotal, self.embedding_dim), dtype=np.float32)
         for i in range(self.index.ntotal):
             xb[i] = self.index.reconstruct(i)
         
-        # Perform K-means clustering
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init="auto").fit(xb)
         
-        # Group documents by cluster
         clusters = {i: [] for i in range(n_clusters)}
         for i, label in enumerate(kmeans.labels_):
-            # Try to get a meaningful title from metadata, fallback to document preview
             title = self.metadata[i].get("title") or \
                    self.metadata[i].get("source_name") or \
                    self.documents[i][:50] + "..." if len(self.documents[i]) > 50 else self.documents[i]
@@ -309,15 +240,19 @@ class VectorDB:
 
 
 if __name__ == "__main__":
+
+    # Load environment variables
+    load_dotenv()
+    VEC_DB_PATH = os.getenv("VEC_DB_PATH", "Vectors/")
     # Example usage with enhanced features
     print("Testing Enhanced Vector Database...")
     
     # Create database with built-in embeddings
-    vector_db = VectorDB("Vectors", use_builtin_embeddings=True)
+    vector_db = VectorDB(VEC_DB_PATH, use_builtin_embeddings=True)
     
     # Load existing industry signals vectors
     print("\n=== Loading Industry Signals Vectors ===")
-    load_success = vector_db.load("industry_signals_vectors")
+    load_success = vector_db.load("industry_signals_vectors_updated")
     
     if not load_success:
         print("No existing vectors found. Creating test data...")
@@ -389,7 +324,7 @@ if __name__ == "__main__":
     print(f"\n=== Database Statistics ===")
     stats = vector_db.get_stats()
     for key, value in stats.items():
-        print(f"📈 {key}: {value}")
+        print(f"{key}: {value}")
     
     # Test save functionality
     print(f"\n=== Saving Updated Vectors ===")
