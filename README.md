@@ -6,5 +6,5 @@ The purpose of this project is two create a dual AI system that will generate co
 
 ## History
 
-03/03/2026 - uploaded MVP. Multi-agent system that can handle queries and simple routing
-02/16/2026 - Add initial files for creating basic components of data infrastructure: etl script, relational and vector database
+- 03/03/2026 - uploaded MVP. Multi-agent system that can handle queries and simple routing
+- 02/16/2026 - Add initial files for creating basic components of data infrastructure: etl script, relational and vector database
