@@ -8,3 +8,6 @@ The purpose of this project is two create a dual AI system that will generate co
 
 - 03/03/2026 - uploaded MVP. Multi-agent system that can handle queries and simple routing
 - 02/16/2026 - Add initial files for creating basic components of data infrastructure: etl script, relational and vector database
+
+## License
+This project is licensed under the MIT License — see the LICENSE file for details.
