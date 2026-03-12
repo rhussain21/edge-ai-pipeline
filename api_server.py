@@ -147,6 +147,29 @@ async def sync_content(
         raise HTTPException(status_code=500, detail=f"Error syncing content: {str(e)}")
 
 
+@app.get("/api/signals/sync")
+async def sync_signals(
+    since: str = Query(..., description="ISO timestamp of last sync"),
+    limit: int = Query(1000, ge=1, le=5000)
+):
+    try:
+        query = """
+            SELECT * FROM signals 
+            WHERE extracted_at > ?
+            ORDER BY extracted_at ASC
+            LIMIT ?
+        """
+        data = db.query(query, (since, limit))
+        return {
+            "count": len(data),
+            "since": since,
+            "data": data,
+            "has_more": len(data) == limit
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error syncing signals: {str(e)}")
+
+
 @app.get("/api/content/item/{content_id}")
 async def get_content_by_id(content_id: int):
     try:

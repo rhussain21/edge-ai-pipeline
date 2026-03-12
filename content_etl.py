@@ -20,6 +20,8 @@ from content_sources import ContentSources
 import tiktoken
 from db_relational import relationalDB
 from db_vector import VectorDB
+from signal_pipeline import SignalPipeline
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -37,6 +39,38 @@ try:
         print("CUDA not available, using CPU")
 except ImportError:
     print("PyTorch not available, using CPU")
+
+# Check for Jetson CUDA specifically
+try:
+    if os.path.exists('/proc/device-tree/model'):
+        with open('/proc/device-tree/model', 'r') as f:
+            model = f.read().strip()
+            if 'jetson' in model.lower() and not CUDA_AVAILABLE:
+                print(f"Detected Jetson device: {model}")
+                print("Jetson detected but CUDA not available in PyTorch - checking for CUDA libraries")
+                # Try to force CUDA detection on Jetson
+                try:
+                    import subprocess
+                    result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        print("NVIDIA GPU detected via nvidia-smi")
+                        # Only set CUDA_AVAILABLE if PyTorch actually supports CUDA
+                        try:
+                            if torch.cuda.is_available():
+                                CUDA_AVAILABLE = True
+                                DEVICE = "cuda"
+                                print("Forcing CUDA device for Jetson")
+                            else:
+                                print("PyTorch CUDA not available, using CPU")
+                        except Exception as torch_error:
+                            print(f"PyTorch CUDA support not available: {torch_error}")
+                            print("Using CPU instead")
+                    else:
+                        print("No NVIDIA GPU detected via nvidia-smi")
+                except:
+                    print("Could not detect NVIDIA GPU via nvidia-smi")
+except:
+    pass
 
 try:
     from faster_whisper import WhisperModel
@@ -75,6 +109,11 @@ class contentETL:
         self.device = DEVICE
         self.cuda_available = CUDA_AVAILABLE
         self.jetson_available = JETSON_AVAILABLE
+        
+        # Initialize signal vector database
+        signal_vector_path = os.path.join(os.path.dirname(VECTOR_PATH), "signal_vectors")
+        self.signal_vdb = VectorDB(signal_vector_path, use_builtin_embeddings=True)
+        # CUDA is already handled in VectorDB constructor now
         
         print(f"ETL initialized with device: {self.device}")
         if self.cuda_available:
@@ -128,7 +167,7 @@ class contentETL:
 
     def extract_text_file(self,file_path):
         """Extract from .txt, .md files"""
-        try:
+        try: 
             with open(file_path, 'r', encoding='utf-8') as f:
                 return f.read()
         except UnicodeDecodeError:
@@ -514,7 +553,7 @@ class contentETL:
                 ORDER BY created_at DESC 
                 LIMIT ?
             """
-            results = self.db.con.execute(query, [limit]).fetchall()
+            results = self.db.execute(query, [limit]).fetchall()
             
             pending_items = []
             for row in results:
@@ -654,12 +693,61 @@ class contentETL:
                         print(f"Added to database with ID: {result}")
                 except Exception as e:
                     print(f"Error processing {filename}: {e}")
+    
+    def vectorize_pending_signals(self, batch_size=100):
+        """Vectorize signals that haven't been vectorized yet"""
+        # Get unvectorized signals
+        signals = self.db.query("""
+            SELECT id, signal_type, entity, description, source_content_id
+            FROM signals 
+            WHERE vectorized = FALSE OR vectorized IS NULL
+            LIMIT ?
+        """, (batch_size,))
+        
+        if not signals:
+            print("No unvectorized signals found")
+            return 0
+        
+        print(f"Vectorizing {len(signals)} signals...")
+        
+        # Vectorize them
+        count = self.signal_vdb.add_signals(signals)
+        
+        # Mark as vectorized
+        for signal in signals:
+            self.db.execute("""
+                UPDATE signals 
+                SET vectorized = TRUE, vectorized_at = ?
+                WHERE id = ?
+            """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), signal['id']))
+        
+        print(f"Successfully vectorized {count} signals")
+        return count
+    
+    def run_signal_vectorization(self):
+        """Main signal vectorization loop"""
+        total_vectorized = 0
+        
+        while True:
+            count = self.vectorize_pending_signals()
+            if count == 0:
+                print(f"All signals vectorized. Total: {total_vectorized}")
+                break
+            
+            total_vectorized += count
+            print(f"Progress: {total_vectorized} signals vectorized")
+        
+        # Save signal vectors
+        self.signal_vdb.save("signal_vectors")
+        print("Signal vectors saved")
+        
+        return total_vectorized
 
 
 if __name__ == '__main__':
     print("Loading environment variables...")
     media_dir = os.getenv("MEDIA_DIR", "media")
-    db_path = os.getenv("REL_DB_PATH", "Database/industry_signals.db")
+    db_path = os.getenv("JETSON_DB_PATH", "Database/industry_signals.db")
     vdb_path = os.getenv("VEC_DB_PATH", "Vectors/")
 
     print(f"Media directory: {media_dir}")
@@ -670,13 +758,46 @@ if __name__ == '__main__':
     db = relationalDB(db_path)
     db.init_db()
     
-    print("Initializing Vector Database...")
-    vdb = VectorDB(vdb_path)
-    vdb.load("industry_signals_vectors_updated")
+    print("Initializing ETL for Signal Vectorization...")
+    etl = contentETL(media_dir, db=db)
+    
+    print("Running signal vectorization...")
+    total_signals = etl.run_signal_vectorization()
+    print(f"Signal vectorization complete: {total_signals} signals processed")
 
-    print("Initializing ETL...")
-    etl = contentETL(media_dir, db=db, vdb=vdb)
+    # Uncomment below if you want to run signal extraction
+    # model_id = 'gemini-2.5-flash'#os.getenv("JETSON_LLM")
+    # model_url = 'https://generativelanguage.googleapis.com/v1beta/openai/' #os.getenv("JETSON_LLM_URL")
+    # sp = SignalPipeline(db, model_id, model_url)
 
-    etl.process_directory()
-    etl.vectorize_pending_batch(50)
-    etl.vdb.save("industry_signals_vectors_updated")
+    # # Debug: Check what's in the database
+    # total_content = db.query("SELECT COUNT(*) as count FROM content")[0]['count']
+    # unprocessed = db.query("SELECT COUNT(*) as count FROM content WHERE signal_processed <> TRUE OR signal_processed IS NULL")[0]['count']
+    # print(f"Total content: {total_content}, Unprocessed: {unprocessed}")
+    
+    # if unprocessed == 0:
+    #     print("No unprocessed content found. All content has signal_processed = TRUE")
+    #     exit()
+    
+    # query = "SELECT id from content where signal_processed <> TRUE order by length(transcript) ASC"
+    # ids = db.query(query)
+
+    # id_list = [row['id'] for row in ids]
+    # print(f"Found {len(id_list)} unprocessed content IDs: {id_list}")
+
+    # if not id_list:
+    #     print("Empty id_list - skipping signal extraction")
+    #     exit()
+
+    # # Process in batches of 3 for Jetson CPU performance
+    # batch_size = 3
+    # for i in range(0, len(id_list), batch_size):
+    #     batch = id_list[i:i+batch_size]
+    #     print(f"Processing batch {i//batch_size + 1}/{(len(id_list) + batch_size - 1)//batch_size}: {batch}")
+        
+    #     try:
+    #         sp.extract_from_batch(batch)
+    #         print(f"Batch {i//batch_size + 1} completed successfully")
+    #     except Exception as e:
+    #         print(f"Batch {i//batch_size + 1} failed: {e}")
+    #         continue

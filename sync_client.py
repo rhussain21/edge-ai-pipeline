@@ -133,6 +133,71 @@ def sync_relational_db():
         return 0
 
 
+def sync_signals_db():
+    """
+    Pull new/updated signals from Jetson via /api/signals/sync endpoint.
+    Uses the last_synced timestamp from sync_metadata.json to do incremental sync.
+    """
+    meta = load_sync_metadata(DB_SYNC_META)
+    SIGNALS_KEY = "Database/signals"
+
+    if SIGNALS_KEY not in meta.get("instances", {}):
+        meta.setdefault("instances", {})[SIGNALS_KEY] = {
+            "last_updated": None,
+            "last_synced": None,
+            "sync_status": "initialized"
+        }
+
+    instance = meta["instances"][SIGNALS_KEY]
+    last_synced = instance.get("last_synced") or "2000-01-01T00:00:00Z"
+
+    logger.info(f"Syncing signals since: {last_synced}")
+
+    try:
+        resp = requests.get(
+            f"{JETSON_URL}/api/signals/sync",
+            params={"since": last_synced, "limit": 1000},
+            timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        count = data.get("count", 0)
+        has_more = data.get("has_more", False)
+        records = data.get("data", [])
+
+        logger.info(f"Received {count} signals from Jetson (has_more={has_more})")
+
+        if records:
+            local_db = relationalDB(DB_KEY)
+            result = local_db.upsert_signals(records)
+            logger.info(f"  Upsert result: {result['inserted']} inserted, {result['updated']} updated, {result['skipped']} skipped")
+
+        now = datetime.now(timezone.utc).isoformat()
+        instance["last_synced"] = now
+        instance["last_updated"] = now
+        instance["sync_status"] = "synced"
+        instance["last_record_count"] = count
+
+        save_sync_metadata(DB_SYNC_META, meta)
+
+        if has_more:
+            logger.warning("More signals available. Run sync again to continue.")
+
+        return count
+
+    except requests.HTTPError as e:
+        logger.error(f"API error during signals sync: {e}")
+        instance["sync_status"] = "error"
+        save_sync_metadata(DB_SYNC_META, meta)
+        return 0
+    except Exception as e:
+        logger.error(f"Signals sync failed: {e}")
+        instance["sync_status"] = "error"
+        save_sync_metadata(DB_SYNC_META, meta)
+        return 0
+
+
 def sync_vector_db():
     """
     Pull FAISS vector files from Jetson via SCP.
@@ -218,7 +283,12 @@ def full_sync():
     db_count = sync_relational_db()
     logger.info(f"Relational DB: {db_count} records synced")
 
-    # 3. Sync vector DB via SCP
+    # 3. Sync signals via API
+    logger.info("\n--- Syncing Signals (API) ---")
+    signals_count = sync_signals_db()
+    logger.info(f"Signals: {signals_count} records synced")
+
+    # 4. Sync vector DB via SCP
     logger.info("\n--- Syncing Vector DB (SCP) ---")
     vdb_count = sync_vector_db()
     logger.info(f"Vector DB: {vdb_count}/2 files synced")
@@ -226,8 +296,9 @@ def full_sync():
     # Summary
     logger.info("\n" + "=" * 50)
     logger.info("Sync complete!")
-    logger.info(f"  DB records: {db_count}")
-    logger.info(f"  VDB files:  {vdb_count}/2")
+    logger.info(f"  Content records: {db_count}")
+    logger.info(f"  Signal records:  {signals_count}")
+    logger.info(f"  VDB files:       {vdb_count}/2")
     logger.info("=" * 50)
 
     return True
