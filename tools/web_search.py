@@ -1,7 +1,7 @@
 """Internet Search Tool - Search the web using Tavily, DuckDuckGo, Google, or Brave."""
 
 from typing import List, Dict, Any, Optional
-import requests
+import requests, os
 import json
 import logging
 from urllib.parse import quote
@@ -143,6 +143,122 @@ class InternetSearchTool:
     
     def _format_results(self, raw_results: List[Dict], query: str) -> Dict[str, Any]:
         pass
+
+# ---------------------------------------------------------------------------
+# Discovery-oriented web search adapter (used by discovery/service.py)
+# ---------------------------------------------------------------------------
+
+from typing import Protocol as _Protocol
+
+try:
+    from discovery.models import CandidateSource, SearchQuery as _SearchQuery
+    _DISCOVERY_MODELS = True
+except ImportError:
+    _DISCOVERY_MODELS = False
+
+
+class SearchProvider(_Protocol):
+    """Protocol for pluggable search backends."""
+    def search(self, query: str, limit: int = 10) -> List[dict]: ...
+
+
+class PlaceholderSearchProvider:
+    """Placeholder — returns empty results. Swap in Tavily/Brave/etc."""
+    def search(self, query: str, limit: int = 10) -> List[dict]:
+        logger.warning(f"PlaceholderSearchProvider: '{query}' — no real provider configured")
+        return []
+
+
+class TavilySearchProvider:
+    """Tavily search provider. Requires: pip install tavily-python + TAVILY_API_KEY."""
+
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or os.getenv("TAVILY_API_KEY")
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            from tavily import TavilyClient
+            self._client = TavilyClient(api_key=self.api_key)
+        return self._client
+
+    def search(self, query: str, limit: int = 10) -> List[dict]:
+        if not self.api_key:
+            logger.error("TAVILY_API_KEY not set")
+            return []
+        try:
+            client = self._get_client()
+            response = client.search(query, max_results=limit, search_depth="basic")
+            return [
+                {
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "snippet": item.get("content", ""),
+                    "score": item.get("score", 0.0),
+                    "published_date": item.get("published_date", ""),
+                }
+                for item in response.get("results", [])
+            ]
+        except Exception as e:
+            logger.error(f"Tavily search error: {e}")
+            return []
+
+
+class WebSearchAdapter:
+    """
+    Web search adapter for the discovery pipeline.
+    Normalizes results into CandidateSource objects.
+    """
+
+    adapter_name = "web"
+
+    def __init__(self, provider=None):
+        if provider is None:
+            if os.getenv("TAVILY_API_KEY"):
+                self.provider = TavilySearchProvider()
+            else:
+                self.provider = PlaceholderSearchProvider()
+        else:
+            self.provider = provider
+
+    def search(self, query) -> list:
+        """Execute web search and normalize results to CandidateSource."""
+        if not _DISCOVERY_MODELS:
+            logger.error("discovery.models not available — cannot normalize results")
+            return []
+
+        raw_results = self.provider.search(query.query, limit=query.limit)
+        candidates = []
+        for result in raw_results:
+            url = result.get("url", "")
+            if not url:
+                continue
+            candidates.append(CandidateSource(
+                title=result.get("title", "Untitled"),
+                url=url,
+                snippet=result.get("snippet", ""),
+                source_type="web_page",
+                publisher=self._extract_domain(url),
+                adapter=self.adapter_name,
+                query_used=query.query,
+                raw_metadata={
+                    "search_score": result.get("score", 0.0),
+                    "published_date": result.get("published_date", ""),
+                },
+            ))
+        return candidates
+
+    def is_available(self) -> bool:
+        return not isinstance(self.provider, PlaceholderSearchProvider)
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        try:
+            from urllib.parse import urlparse
+            return urlparse(url).netloc
+        except Exception:
+            return ""
+
 
 if __name__ == "__main__":
     print("=== Testing Tavily ===")

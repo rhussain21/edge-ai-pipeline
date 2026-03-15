@@ -17,8 +17,7 @@ if not logging.getLogger().handlers:
 from db_vector import VectorDB
 from db_relational import relationalDB
 from llm_client import OllamaClient
-from tools.internet_search_tool import InternetSearchTool
-
+from tools.web_search import InternetSearchTool
 from agents.sql_agent import SQLAgent
 from agents.vector_agent import VectorAgent
 from agents.web_agent import WebAgent
@@ -28,14 +27,14 @@ logger = logging.getLogger(__name__)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 class AgentFactory:
-    def __init__(self, vector_db_path: str, relational_db_path: str, 
+    def __init__(self, corpus_vector_path: str, relational_db_path: str, 
                  tavily_api_key: str = None, ollama_model: str = "llama3:latest"):
-        self.vector_db_path = vector_db_path
+        self.corpus_vector_path = corpus_vector_path
         self.relational_db_path = relational_db_path
         self.tavily_api_key = tavily_api_key
         self.ollama_model = ollama_model
         
-        self._vector_db = None
+        self._corpus_vdb = None
         self._relational_db = None
         self._llm_client = None
         self._internet_tool = None
@@ -46,7 +45,7 @@ class AgentFactory:
         """Initialize shared resources (databases, LLM, tools)."""
         logger.info("Initializing shared resources...")
         
-        self._vector_db = VectorDB(self.vector_db_path)
+        self._corpus_vdb = VectorDB(self.corpus_vector_path)
         self._relational_db = relationalDB(self.relational_db_path)
         self._llm_client = OllamaClient(model=self.ollama_model)
         
@@ -73,7 +72,7 @@ class AgentFactory:
                 llm_client=self._llm_client
             )
             agents["vector_agent"] = VectorAgent(
-                vector_db=self._vector_db,
+                vector_db=self._corpus_vdb,
                 llm_client=self._llm_client
             )
             agents["web_agent"] = WebAgent(
@@ -119,7 +118,7 @@ class AgentFactory:
             "status": "Ready",
             "agents": list(self._agents.keys()),
             "router_type": type(self._router).__name__,
-            "vector_db_path": self.vector_db_path,
+            "corpus_vector_path": self.corpus_vector_path,
             "relational_db_path": self.relational_db_path,
             "internet_provider": self._internet_tool.provider if hasattr(self, '_internet_tool') and self._internet_tool else "Not initialized",
             "ollama_model": self.ollama_model
@@ -128,7 +127,7 @@ class AgentFactory:
 
 def create_production_system():
     factory = AgentFactory(
-        vector_db_path="Vectors/",
+        corpus_vector_path="Vectors/corpus_vectors/",
         relational_db_path="Database/industry_signals.db",
         tavily_api_key=TAVILY_API_KEY,
         ollama_model="llama3:latest"
@@ -139,7 +138,7 @@ def create_production_system():
 
 def create_development_system():
     factory = AgentFactory(
-        vector_db_path="Vectors/",
+        corpus_vector_path="Vectors/corpus_vectors/",
         relational_db_path="Database/industry_signals.db"
     )
     
@@ -148,7 +147,7 @@ def create_development_system():
 
 if __name__ == "__main__":
     factory = AgentFactory(
-        vector_db_path="Vectors/",
+        corpus_vector_path="Vectors/corpus_vectors/",
         relational_db_path="Database/industry_signals.db",
         tavily_api_key=TAVILY_API_KEY
     )

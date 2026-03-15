@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 import hashlib
-from api_server import VECTOR_PATH
+VECTOR_PATH = os.getenv("JETSON_VECTOR_PATH", os.getenv("VECTOR_DB_PATH", "Vectors/"))
 import pdfplumber
 try:
     import fitz  # PyMuPDF
@@ -16,11 +16,11 @@ except ImportError:
 from bs4 import BeautifulSoup
 import docx
 import whisper
-from content_sources import ContentSources
+from etl.sources import ContentSources
 import tiktoken
 from db_relational import relationalDB
 from db_vector import VectorDB
-from signal_pipeline import SignalPipeline
+from etl.signals import SignalPipeline
 
 from dotenv import load_dotenv
 
@@ -110,8 +110,8 @@ class contentETL:
         self.cuda_available = CUDA_AVAILABLE
         self.jetson_available = JETSON_AVAILABLE
         
-        # Initialize signal vector database
-        signal_vector_path = os.path.join(os.path.dirname(VECTOR_PATH), "signal_vectors")
+        # Initialize signal vector database (sibling of corpus_vectors under VECTOR_PATH)
+        signal_vector_path = os.path.join(VECTOR_PATH.rstrip("/"), "signal_vectors")
         self.signal_vdb = VectorDB(signal_vector_path, use_builtin_embeddings=True)
         # CUDA is already handled in VectorDB constructor now
         
@@ -261,15 +261,22 @@ class contentETL:
             return self._transcribe_with_whisper(file_path)
     
     def _transcribe_with_whisper(self, file_path):
-        """Transcribe using Whisper with optimal acceleration for platform."""
+        """Transcribe using Whisper with optimal acceleration for platform.
+        
+        Benchmark results (Jetson Orin Nano):
+          faster-whisper/tiny/cpu/int8/no-vad = 0.068 RTF (~15x real-time)
+          openai/tiny/cuda                    = 0.088 RTF
+          openai/base/cpu                     = 0.289 RTF (slowest)
+        
+        Strategy: faster-whisper tiny on CPU is fastest and frees GPU for embeddings.
+        """
         try:
             if self._whisper_model is None:
                 if FASTER_WHISPER_AVAILABLE:
-                    print(f"Loading faster-whisper model on {self.device}...")
-                    compute_type = "float16" if self.cuda_available else "int8"
-                    self._whisper_model = WhisperModel("base", device=self.device, compute_type=compute_type)
+                    print("Loading faster-whisper (tiny, cpu, int8)...")
+                    self._whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
                     self._whisper_model_type = "faster"
-                    print(f"faster-whisper loaded ({compute_type})")
+                    print("faster-whisper loaded (tiny/cpu/int8)")
                 
                 elif MLX_WHISPER_AVAILABLE:
                     print("Loading MLX Whisper (M2 MacBook)...")
@@ -279,19 +286,21 @@ class contentETL:
                 
                 else:
                     print(f"Loading regular Whisper on {self.device}...")
-                    self._whisper_model = whisper.load_model("base", device=self.device)
+                    self._whisper_model = whisper.load_model("tiny", device=self.device)
                     self._whisper_model_type = "regular"
                     print("Regular Whisper loaded")
             
             print(f"Transcribing with {self._whisper_model_type} Whisper: {file_path}")
             
             if self._whisper_model_type == "faster":
-                segments, info = self._whisper_model.transcribe(file_path, beam_size=5)
+                segments, info = self._whisper_model.transcribe(
+                    file_path, beam_size=1, vad_filter=False
+                )
                 text = " ".join([segment.text for segment in segments])
                 return text.strip()
             
             elif self._whisper_model_type == "mlx":
-                result = mlx_whisper.transcribe(file_path, path_or_hf_repo="mlx-community/whisper-base")
+                result = mlx_whisper.transcribe(file_path, path_or_hf_repo="mlx-community/whisper-tiny")
                 return result["text"].strip()
             
             else:
@@ -304,12 +313,14 @@ class contentETL:
                 print("CUDA failed, falling back to CPU...")
                 try:
                     if FASTER_WHISPER_AVAILABLE:
-                        cpu_model = WhisperModel("base", device="cpu", compute_type="int8")
-                        segments, info = cpu_model.transcribe(file_path)
+                        cpu_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+                        segments, info = cpu_model.transcribe(
+                            file_path, beam_size=1, vad_filter=False
+                        )
                         text = " ".join([segment.text for segment in segments])
                         return text.strip()
                     else:
-                        cpu_model = whisper.load_model("base", device="cpu")
+                        cpu_model = whisper.load_model("tiny", device="cpu")
                         result = cpu_model.transcribe(file_path, verbose=False)
                         return result["text"].strip()
                 except Exception as fallback_error:
@@ -748,11 +759,11 @@ if __name__ == '__main__':
     print("Loading environment variables...")
     media_dir = os.getenv("MEDIA_DIR", "media")
     db_path = os.getenv("JETSON_DB_PATH", "Database/industry_signals.db")
-    vdb_path = os.getenv("VEC_DB_PATH", "Vectors/")
+    vector_base = os.getenv("JETSON_VECTOR_PATH", os.getenv("VECTOR_DB_PATH", "Vectors/"))
 
     print(f"Media directory: {media_dir}")
     print(f"Database path: {db_path}")
-    print(f"Vector database path: {vdb_path}")
+    print(f"Vector base: {vector_base}")
 
     print("Intializing Relational Database...")
     db = relationalDB(db_path)
@@ -764,40 +775,3 @@ if __name__ == '__main__':
     print("Running signal vectorization...")
     total_signals = etl.run_signal_vectorization()
     print(f"Signal vectorization complete: {total_signals} signals processed")
-
-    # Uncomment below if you want to run signal extraction
-    # model_id = 'gemini-2.5-flash'#os.getenv("JETSON_LLM")
-    # model_url = 'https://generativelanguage.googleapis.com/v1beta/openai/' #os.getenv("JETSON_LLM_URL")
-    # sp = SignalPipeline(db, model_id, model_url)
-
-    # # Debug: Check what's in the database
-    # total_content = db.query("SELECT COUNT(*) as count FROM content")[0]['count']
-    # unprocessed = db.query("SELECT COUNT(*) as count FROM content WHERE signal_processed <> TRUE OR signal_processed IS NULL")[0]['count']
-    # print(f"Total content: {total_content}, Unprocessed: {unprocessed}")
-    
-    # if unprocessed == 0:
-    #     print("No unprocessed content found. All content has signal_processed = TRUE")
-    #     exit()
-    
-    # query = "SELECT id from content where signal_processed <> TRUE order by length(transcript) ASC"
-    # ids = db.query(query)
-
-    # id_list = [row['id'] for row in ids]
-    # print(f"Found {len(id_list)} unprocessed content IDs: {id_list}")
-
-    # if not id_list:
-    #     print("Empty id_list - skipping signal extraction")
-    #     exit()
-
-    # # Process in batches of 3 for Jetson CPU performance
-    # batch_size = 3
-    # for i in range(0, len(id_list), batch_size):
-    #     batch = id_list[i:i+batch_size]
-    #     print(f"Processing batch {i//batch_size + 1}/{(len(id_list) + batch_size - 1)//batch_size}: {batch}")
-        
-    #     try:
-    #         sp.extract_from_batch(batch)
-    #         print(f"Batch {i//batch_size + 1} completed successfully")
-    #     except Exception as e:
-    #         print(f"Batch {i//batch_size + 1} failed: {e}")
-    #         continue

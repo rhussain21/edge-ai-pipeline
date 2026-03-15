@@ -11,7 +11,7 @@
 # - Whisper / faster-whisper for audio transcription
 # - PDF, HTML, and DOCX content extraction libraries
 #
-# The container is designed to run the `content_etl.py` pipeline which:
+# The container is designed to run the `etl/pipeline.py` module which:
 # 1. Extracts content from media sources
 # 2. Generates embeddings for semantic search
 # 3. Stores metadata in a relational database
@@ -50,5 +50,3 @@ RUN python3 -m pip install -i https://pypi.org/simple --no-cache-dir \
     tqdm
 
 COPY . .
-
-CMD ["python3", "content_etl.py"]

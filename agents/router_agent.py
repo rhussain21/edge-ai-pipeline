@@ -5,11 +5,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 import time
-import sys
-import os
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.agent_response import AgentResponse, AgentTimer
+from agents.base import AgentResponse, AgentTimer
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,39 @@
+"""Base Agent Interface and Agent Response models."""
+
+from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 import time
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class BaseAgent(ABC):
+    name: str = "base_agent"
+    description: str = "Base agent description"
+    
+    def __init__(self, tools: Optional[List] = None, llm_client=None):
+        self.tools = tools or []
+        self.llm_client = llm_client
+        logger.info(f"Initialized {self.name} with {len(self.tools)} tools")
+    
+    @abstractmethod
+    def process(self, query: str, **kwargs) -> Any:
+        pass
+    
+    def get_info(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "type": self.__class__.__name__,
+            "num_tools": len(self.tools),
+            "tools": [tool.name if hasattr(tool, 'name') else str(tool) for tool in self.tools]
+        }
+    
+    def __repr__(self):
+        return f"{self.__class__.__name__}(name='{self.name}', tools={len(self.tools)})"
 
 
 @dataclass
@@ -53,22 +85,3 @@ class AgentTimer:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.start_time is not None:
             self.duration_ms = (time.perf_counter() - self.start_time) * 1000
-
-
-if __name__ == "__main__":
-    resp1 = AgentResponse(agent_name="test_agent", data={"count": 5})
-    print(resp1.to_dict())
-    print(resp1)
-    
-    resp2 = AgentResponse.from_agent_output("test_agent", {"result": "success"}, 100.5)
-    print(resp2)
-    
-    resp3 = AgentResponse.error_response("test_agent", "Something broke")
-    print(resp3)
-    
-    print("\n--- Testing AgentTimer ---")
-    with AgentTimer() as timer:
-        for i in range(1000000):
-            pass
-    print(f"Timer duration: {timer.duration_ms:.2f}ms")
-

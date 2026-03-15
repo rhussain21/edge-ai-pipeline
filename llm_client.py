@@ -89,15 +89,15 @@ if __name__ == "__main__":
     content_dir = os.path.join(rel_path, 'content_files')
 
     db_path = os.path.join(rel_path, 'Database/industry_signals.db')
-    vdb_path = os.path.join(rel_path, 'Vectors/industry_signals_vectors')
+    vdb_path = os.path.join(rel_path, 'Vectors/corpus_vectors')
 
     print("Initializing Relational Database...")
     db = relationalDB(db_path)
     db.init_db()
     
     print("Intializing Vector Database...")
-    vdb = VectorDB("Vectors/")
-    vdb.load("industry_signals_vectors")
+    vdb = VectorDB("Vectors/corpus_vectors/")
+    vdb.load("corpus_vectors")
 
     llm_client = OllamaClient(model="llama3:latest")
     llm_client = LLMClient(vdb, db, llm_client)

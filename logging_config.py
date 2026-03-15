@@ -29,7 +29,7 @@ def setup_logging(level=logging.DEBUG, log_file=None):
     
     loggers_to_debug = [
         'agents',
-        'agent_factory', 
+        'agents.factory', 
         'agents.sql_agent',
         'agents.vector_agent',
         'agents.web_agent',
@@ -37,9 +37,9 @@ def setup_logging(level=logging.DEBUG, log_file=None):
         'db_vector',
         'db_relational',
         'tools',
-        'tools.internet_search_tool',
-        'core',
-        'core.agent_response'
+        'tools.web_search',
+        'etl',
+        'discovery',
     ]
     
     for logger_name in loggers_to_debug:

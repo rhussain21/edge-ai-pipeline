@@ -198,68 +198,95 @@ def sync_signals_db():
         return 0
 
 
+def _scp_file(remote_path: str, local_path: str, file_key: str, meta: dict) -> bool:
+    """SCP a single file from Jetson. Returns True on success."""
+    if file_key not in meta.get("instances", {}):
+        meta.setdefault("instances", {})[file_key] = {
+            "last_updated": None,
+            "last_synced": None,
+            "sync_status": "initialized"
+        }
+
+    logger.info(f"SCP: {remote_path} -> {local_path}")
+    try:
+        result = subprocess.run(
+            ["scp", "-o", "ConnectTimeout=10", remote_path, local_path],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        if result.returncode == 0:
+            now = datetime.now(timezone.utc).isoformat()
+            file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+            meta["instances"][file_key].update({
+                "last_synced": now,
+                "last_updated": now,
+                "sync_status": "synced",
+                "file_size_bytes": file_size
+            })
+            logger.info(f"  OK: {os.path.basename(local_path)} ({file_size / 1024 / 1024:.1f} MB)")
+            return True
+        else:
+            logger.error(f"  SCP failed for {os.path.basename(local_path)}: {result.stderr.strip()}")
+            meta["instances"][file_key]["sync_status"] = "error"
+            return False
+    except subprocess.TimeoutExpired:
+        logger.error(f"  SCP timed out for {os.path.basename(local_path)}")
+        meta["instances"][file_key]["sync_status"] = "timeout"
+        return False
+    except Exception as e:
+        logger.error(f"  SCP error for {os.path.basename(local_path)}: {e}")
+        meta["instances"][file_key]["sync_status"] = "error"
+        return False
+
+
 def sync_vector_db():
     """
     Pull FAISS vector files from Jetson via SCP.
-    Downloads .faiss and .pkl files to local Vectors/ directory.
+    Syncs both corpus vectors and signal vectors to local Vectors/ directory.
+    Both live as sibling subdirectories under the vectors base path.
     """
     meta = load_sync_metadata(VDB_SYNC_META)
 
-    local_vectors_dir = VECTOR_KEY
-    os.makedirs(local_vectors_dir, exist_ok=True)
+    remote_base = os.getenv("JETSON_VECTOR_PATH", "/mnt/nvme/vectors/").rstrip("/")
+    local_base = VECTOR_KEY.rstrip("/") if VECTOR_KEY else "Vectors"
+    os.makedirs(local_base, exist_ok=True)
 
-    # Files to sync
-    vector_files = [
-        "industry_signals_vectors.faiss",
-        "industry_signals_vectors.pkl"
+    # Corpus vector files (in corpus_vectors/ subdirectory)
+    corpus_files = [
+        "corpus_vectors/corpus_vectors.faiss",
+        "corpus_vectors/corpus_vectors.pkl"
     ]
 
-    remote_vectors_dir = os.getenv("JETSON_VECTOR_PATH")
+    # Signal vector files (in signal_vectors/ subdirectory)
+    signal_files = [
+        "signal_vectors/signal_vectors.faiss",
+        "signal_vectors/signal_vectors.pkl"
+    ]
+
     success_count = 0
 
-    for filename in vector_files:
-        remote_path = f"{JETSON_USER}@{JETSON_IP}:{remote_vectors_dir}{filename}"
-        local_path = os.path.join(local_vectors_dir, filename)
-        file_key = f"Vectors/{filename}"
+    # Sync corpus vectors
+    logger.info("Syncing corpus vectors...")
+    local_corpus_dir = os.path.join(local_base, "corpus_vectors")
+    os.makedirs(local_corpus_dir, exist_ok=True)
+    for filepath in corpus_files:
+        remote_path = f"{JETSON_USER}@{JETSON_IP}:{remote_base}/{filepath}"
+        local_path = os.path.join(local_base, filepath)
+        file_key = f"Vectors/{filepath}"
+        if _scp_file(remote_path, local_path, file_key, meta):
+            success_count += 1
 
-        if file_key not in meta.get("instances", {}):
-            meta.setdefault("instances", {})[file_key] = {
-                "last_updated": None,
-                "last_synced": None,
-                "sync_status": "initialized"
-            }
-
-        logger.info(f"SCP: {remote_path} -> {local_path}")
-
-        try:
-            result = subprocess.run(
-                ["scp", "-o", "ConnectTimeout=10", remote_path, local_path],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-
-            if result.returncode == 0:
-                now = datetime.now(timezone.utc).isoformat()
-                file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
-
-                meta["instances"][file_key]["last_synced"] = now
-                meta["instances"][file_key]["last_updated"] = now
-                meta["instances"][file_key]["sync_status"] = "synced"
-                meta["instances"][file_key]["file_size_bytes"] = file_size
-
-                logger.info(f"  OK: {filename} ({file_size / 1024 / 1024:.1f} MB)")
-                success_count += 1
-            else:
-                logger.error(f"  SCP failed for {filename}: {result.stderr.strip()}")
-                meta["instances"][file_key]["sync_status"] = "error"
-
-        except subprocess.TimeoutExpired:
-            logger.error(f"  SCP timed out for {filename}")
-            meta["instances"][file_key]["sync_status"] = "timeout"
-        except Exception as e:
-            logger.error(f"  SCP error for {filename}: {e}")
-            meta["instances"][file_key]["sync_status"] = "error"
+    # Sync signal vectors
+    logger.info("Syncing signal vectors...")
+    local_signal_dir = os.path.join(local_base, "signal_vectors")
+    os.makedirs(local_signal_dir, exist_ok=True)
+    for filepath in signal_files:
+        remote_path = f"{JETSON_USER}@{JETSON_IP}:{remote_base}/{filepath}"
+        local_path = os.path.join(local_base, filepath)
+        file_key = f"Vectors/{filepath}"
+        if _scp_file(remote_path, local_path, file_key, meta):
+            success_count += 1
 
     save_sync_metadata(VDB_SYNC_META, meta)
     return success_count
@@ -288,17 +315,17 @@ def full_sync():
     signals_count = sync_signals_db()
     logger.info(f"Signals: {signals_count} records synced")
 
-    # 4. Sync vector DB via SCP
+    # 4. Sync vector DB via SCP (content + signal vectors)
     logger.info("\n--- Syncing Vector DB (SCP) ---")
     vdb_count = sync_vector_db()
-    logger.info(f"Vector DB: {vdb_count}/2 files synced")
+    logger.info(f"Vector DB: {vdb_count}/4 files synced")
 
     # Summary
     logger.info("\n" + "=" * 50)
     logger.info("Sync complete!")
-    logger.info(f"  Content records: {db_count}")
-    logger.info(f"  Signal records:  {signals_count}")
-    logger.info(f"  VDB files:       {vdb_count}/2")
+    logger.info(f"  Content records:  {db_count}")
+    logger.info(f"  Signal records:   {signals_count}")
+    logger.info(f"  VDB files:        {vdb_count}/4 (2 corpus + 2 signal)")
     logger.info("=" * 50)
 
     return True

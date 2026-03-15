@@ -11,7 +11,7 @@ Architecture:
 from dotenv import load_dotenv
 load_dotenv()
 
-from agent_factory import AgentFactory
+from agents.factory import AgentFactory
 from logging_config import setup_debug_logging
 import os
 import logging
@@ -25,7 +25,7 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:latest")
 
 factory = AgentFactory(
-    vector_db_path="Vectors/",
+    corpus_vector_path="Vectors/corpus_vectors/",
     relational_db_path="Database/industry_signals.db",
     tavily_api_key=TAVILY_API_KEY,
     ollama_model=OLLAMA_MODEL

@@ -1,0 +1,64 @@
+{
+  "organizations": [
+    {
+      "name": "ISA",
+      "full_name": "International Society of Automation",
+      "url": "https://www.isa.org",
+      "content_types": ["standards", "training", "certification", "publications"]
+    },
+    {
+      "name": "ODVA",
+      "full_name": "Open DeviceNet Vendors Association",
+      "url": "https://www.odva.org",
+      "content_types": ["EtherNet/IP specs", "CIP protocol", "conformance testing"]
+    },
+    {
+      "name": "OPC Foundation",
+      "full_name": "OPC Foundation",
+      "url": "https://opcfoundation.org",
+      "content_types": ["OPC UA specs", "companion specs", "reference implementations"]
+    },
+    {
+      "name": "PLCopen",
+      "full_name": "PLCopen",
+      "url": "https://www.plcopen.org",
+      "content_types": ["IEC 61131-3 extensions", "motion control", "safety", "OPC UA mapping"]
+    },
+    {
+      "name": "NIST",
+      "full_name": "National Institute of Standards and Technology",
+      "url": "https://www.nist.gov/el/intelligent-systems-division-73500",
+      "content_types": ["cybersecurity frameworks", "manufacturing standards", "reference architectures"]
+    },
+    {
+      "name": "IFR",
+      "full_name": "International Federation of Robotics",
+      "url": "https://ifr.org",
+      "content_types": ["world robotics reports", "statistics", "position papers"]
+    },
+    {
+      "name": "CISA",
+      "full_name": "Cybersecurity and Infrastructure Security Agency",
+      "url": "https://www.cisa.gov/topics/industrial-control-systems",
+      "content_types": ["ICS advisories", "vulnerability reports", "best practices"]
+    },
+    {
+      "name": "PI (PROFIBUS & PROFINET International)",
+      "full_name": "PROFIBUS & PROFINET International",
+      "url": "https://www.profibus.com",
+      "content_types": ["PROFINET specs", "PROFIBUS specs", "technology guides"]
+    },
+    {
+      "name": "EtherCAT Technology Group",
+      "full_name": "EtherCAT Technology Group",
+      "url": "https://www.ethercat.org",
+      "content_types": ["EtherCAT specs", "implementation guides", "slave information"]
+    },
+    {
+      "name": "ROS Industrial",
+      "full_name": "ROS-Industrial Consortium",
+      "url": "https://rosindustrial.org",
+      "content_types": ["ROS packages", "training", "application examples"]
+    }
+  ]
+}

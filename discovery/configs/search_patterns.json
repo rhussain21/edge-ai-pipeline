@@ -1,0 +1,39 @@
+{
+  "web_patterns": [
+    {
+      "name": "vendor_docs",
+      "template": "{vendor} {topic} documentation filetype:pdf",
+      "tags": ["vendor_docs", "pdf"]
+    },
+    {
+      "name": "vendor_manual",
+      "template": "{vendor} {topic} programming manual",
+      "tags": ["vendor_docs", "manual"]
+    },
+    {
+      "name": "vendor_whitepaper",
+      "template": "{vendor} {topic} whitepaper",
+      "tags": ["vendor_docs", "whitepaper"]
+    },
+    {
+      "name": "topic_guide",
+      "template": "{topic} technical guide best practices",
+      "tags": ["guide", "best_practices"]
+    },
+    {
+      "name": "topic_tutorial",
+      "template": "{topic} tutorial getting started industrial automation",
+      "tags": ["tutorial", "beginner"]
+    },
+    {
+      "name": "topic_application_note",
+      "template": "{topic} application note industrial",
+      "tags": ["app_note"]
+    },
+    {
+      "name": "topic_comparison",
+      "template": "{topic} comparison industrial protocols",
+      "tags": ["comparison", "analysis"]
+    }
+  ]
+}

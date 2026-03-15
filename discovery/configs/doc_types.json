@@ -1,0 +1,44 @@
+{
+  "doc_types": [
+    {
+      "name": "manual",
+      "search_terms": ["user manual", "programming manual", "hardware manual", "installation guide"],
+      "authority_weight": 0.9
+    },
+    {
+      "name": "whitepaper",
+      "search_terms": ["whitepaper", "white paper", "technical paper"],
+      "authority_weight": 0.85
+    },
+    {
+      "name": "specification",
+      "search_terms": ["specification", "datasheet", "data sheet", "technical specification"],
+      "authority_weight": 0.9
+    },
+    {
+      "name": "technical_guide",
+      "search_terms": ["technical guide", "application guide", "best practices guide", "implementation guide"],
+      "authority_weight": 0.8
+    },
+    {
+      "name": "application_note",
+      "search_terms": ["application note", "app note", "technical note", "tech note"],
+      "authority_weight": 0.8
+    },
+    {
+      "name": "official_docs",
+      "search_terms": ["documentation", "official docs", "help center", "knowledge base"],
+      "authority_weight": 0.85
+    },
+    {
+      "name": "tutorial",
+      "search_terms": ["tutorial", "getting started", "how to", "step by step"],
+      "authority_weight": 0.6
+    },
+    {
+      "name": "research_paper",
+      "search_terms": ["research paper", "journal article", "conference paper", "IEEE", "arxiv"],
+      "authority_weight": 0.75
+    }
+  ]
+}

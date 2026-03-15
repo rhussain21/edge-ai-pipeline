@@ -1,0 +1,17 @@
+content_files/
+Vectors/
+Database/   
+Benchmark/
+Dashboards/
+media/
+.chainlit/
+.env
+__pycache__
+discovery/cache.db
+logs/
+jetson_backup/
+duckdb_cli-osx-universal.zip
+pdf_extraction_samples/
+test_pdf_extraction.py
+run_api.sh
+run_etl.sh

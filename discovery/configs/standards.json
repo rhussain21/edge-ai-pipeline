@@ -1,0 +1,64 @@
+{
+  "standards": [
+    {
+      "id": "IEC 61131-3",
+      "name": "PLC Programming Languages",
+      "category": "plc",
+      "keywords": ["structured text", "ladder logic", "function block", "SFC", "instruction list"]
+    },
+    {
+      "id": "IEC 62443",
+      "name": "Industrial Cybersecurity",
+      "category": "cybersecurity",
+      "keywords": ["OT security", "network segmentation", "security levels", "IACS"]
+    },
+    {
+      "id": "ISO 13849",
+      "name": "Safety of Machinery - Safety-related Parts of Control Systems",
+      "category": "safety",
+      "keywords": ["performance level", "safety PLC", "risk assessment", "SIL"]
+    },
+    {
+      "id": "IEC 61508",
+      "name": "Functional Safety of Electrical/Electronic Systems",
+      "category": "safety",
+      "keywords": ["SIL", "safety integrity level", "functional safety", "SIS"]
+    },
+    {
+      "id": "IEC 61850",
+      "name": "Communication Networks and Systems for Power Utility Automation",
+      "category": "networking",
+      "keywords": ["substation automation", "GOOSE", "MMS", "SCL"]
+    },
+    {
+      "id": "OPC UA",
+      "name": "OPC Unified Architecture",
+      "category": "networking",
+      "keywords": ["OPC UA", "information model", "pub/sub", "companion specification"]
+    },
+    {
+      "id": "ISA-95",
+      "name": "Enterprise-Control System Integration",
+      "category": "mes",
+      "keywords": ["MES", "manufacturing operations", "B2MML", "activity model"]
+    },
+    {
+      "id": "ISA-88",
+      "name": "Batch Control",
+      "category": "process",
+      "keywords": ["batch control", "S88", "recipe management", "procedural control"]
+    },
+    {
+      "id": "ISO 10218",
+      "name": "Robots and Robotic Devices - Safety Requirements for Industrial Robots",
+      "category": "robotics",
+      "keywords": ["robot safety", "collaborative robot", "safety-rated", "protective stop"]
+    },
+    {
+      "id": "IEC 60870-5-104",
+      "name": "Telecontrol Equipment and Systems",
+      "category": "scada",
+      "keywords": ["SCADA protocol", "telecontrol", "RTU", "DNP3 alternative"]
+    }
+  ]
+}

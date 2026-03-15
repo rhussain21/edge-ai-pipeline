@@ -2,8 +2,7 @@
 
 from typing import Any, Dict, Optional
 import logging
-from core.base_agent import BaseAgent
-from core.agent_response import AgentResponse
+from agents.base import BaseAgent, AgentResponse
 
 logger = logging.getLogger(__name__)
 

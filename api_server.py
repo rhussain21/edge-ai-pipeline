@@ -29,22 +29,33 @@ app.add_middleware(
 )
 
 DB_PATH = os.getenv("JETSON_DB_PATH")
-VECTOR_PATH = os.getenv("JETSON_VECTOR_PATH")
+VECTOR_PATH = os.getenv("JETSON_VECTOR_PATH", "/mnt/nvme/vectors/")
+CORPUS_VECTOR_PATH = os.path.join(VECTOR_PATH.rstrip("/"), "corpus_vectors")
+SIGNAL_VECTOR_PATH = os.path.join(VECTOR_PATH.rstrip("/"), "signal_vectors")
 
 
 db = relationalDB(DB_PATH)
-vdb = VectorDB(VECTOR_PATH)
+
+corpus_vdb = VectorDB(CORPUS_VECTOR_PATH)
 try:
-    vdb.load("industry_signals_vectors")
-    print(f"Loaded {len(vdb.documents)} vectors")
+    corpus_vdb.load("corpus_vectors")
+    print(f"Loaded {len(corpus_vdb.documents)} corpus vectors")
 except Exception as e:
-    print(f"Warning: Could not load vectors: {e}") 
+    print(f"Warning: Could not load corpus vectors: {e}")
+
+signal_vdb = VectorDB(SIGNAL_VECTOR_PATH)
+try:
+    signal_vdb.load("signal_vectors")
+    print(f"Loaded {len(signal_vdb.documents)} signal vectors")
+except Exception as e:
+    print(f"Warning: Could not load signal vectors: {e}")
 
 
 class StatsResponse(BaseModel):
     total_content: int
     content_by_type: Dict[str, int]
-    total_vectors: int
+    total_corpus_vectors: int
+    total_signal_vectors: int
     last_updated: str
 
 
@@ -71,7 +82,7 @@ async def root():
         },
         "system": {
             "database": "DuckDB relational database",
-            "vectors": "FAISS vector database with semantic search",
+            "vectors": "FAISS vector databases (corpus + signal)",
             "processing": "Automated ETL pipeline for content ingestion"
         }
     }
@@ -116,7 +127,8 @@ async def get_stats():
         return StatsResponse(
             total_content=stats.get('total_content', 0),
             content_by_type=content_by_type,
-            total_vectors=len(vdb.documents) if vdb else 0,
+            total_corpus_vectors=len(corpus_vdb.documents) if corpus_vdb else 0,
+            total_signal_vectors=len(signal_vdb.documents) if signal_vdb else 0,
             last_updated=stats.get('last_updated', 'N/A')
         )
     except Exception as e:
@@ -198,21 +210,41 @@ async def search_vectors(
     threshold: float = Query(0.3, ge=0.0, le=1.0)
 ):
     try:
-        if not vdb or not vdb.model:
-            raise HTTPException(status_code=503, detail="Vector search not available")
+        if not corpus_vdb or not corpus_vdb.model:
+            raise HTTPException(status_code=503, detail="Corpus vector search not available")
         
-        response = vdb.search(text)
-
-        
+        response = corpus_vdb.search(text, top_k=limit, cosine_threshold=threshold)
         return {
             "query": text,
             "count": len(response),
-            "results": [response]
+            "results": response
         }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error in vector search: {str(e)}")
+
+
+@app.get("/api/signals/search")
+async def search_signal_vectors(
+    text: str = Query(..., description="Search query text"),
+    limit: int = Query(10, ge=1, le=100),
+    threshold: float = Query(0.3, ge=0.0, le=1.0)
+):
+    try:
+        if not signal_vdb or not signal_vdb.model:
+            raise HTTPException(status_code=503, detail="Signal vector search not available")
+        
+        response = signal_vdb.search(text, top_k=limit, cosine_threshold=threshold)
+        return {
+            "query": text,
+            "count": len(response),
+            "results": response
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error in signal vector search: {str(e)}")
 
 
 if __name__ == "__main__":
@@ -222,9 +254,12 @@ if __name__ == "__main__":
     print("Starting Jetson ETL API Server")
     print("="*60)
     print(f"Database: {DB_PATH}")
-    print(f"Vectors: {VECTOR_PATH}")
-    if vdb:
-        print(f"Documents: {len(vdb.documents)}")
+    print(f"Corpus Vectors: {CORPUS_VECTOR_PATH}")
+    print(f"Signal Vectors: {SIGNAL_VECTOR_PATH}")
+    if corpus_vdb:
+        print(f"Corpus docs: {len(corpus_vdb.documents)}")
+    if signal_vdb:
+        print(f"Signal docs: {len(signal_vdb.documents)}")
     print("="*60 + "\n")
     
     uvicorn.run(

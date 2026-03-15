@@ -1,0 +1,64 @@
+{
+  "vendors": [
+    {
+      "name": "Siemens",
+      "products": ["TIA Portal", "S7-1500", "SIMATIC", "PROFINET", "WinCC"],
+      "github_org": "siemens",
+      "docs_url": "https://support.industry.siemens.com"
+    },
+    {
+      "name": "Rockwell Automation",
+      "products": ["Studio 5000", "ControlLogix", "CompactLogix", "FactoryTalk"],
+      "github_org": null,
+      "docs_url": "https://literature.rockwellautomation.com"
+    },
+    {
+      "name": "ABB",
+      "products": ["RobotStudio", "AC500", "ABB Ability", "IRC5"],
+      "github_org": "ABB",
+      "docs_url": "https://new.abb.com/products/robotics"
+    },
+    {
+      "name": "Beckhoff",
+      "products": ["TwinCAT", "EtherCAT", "XTS", "XPlanar"],
+      "github_org": "Beckhoff",
+      "docs_url": "https://infosys.beckhoff.com"
+    },
+    {
+      "name": "Fanuc",
+      "products": ["ROBOGUIDE", "CRX", "R-30iB", "FANUC CNC"],
+      "github_org": null,
+      "docs_url": "https://www.fanucamerica.com"
+    },
+    {
+      "name": "Mitsubishi Electric",
+      "products": ["MELSEC", "GX Works", "GOT2000", "MELFA"],
+      "github_org": null,
+      "docs_url": "https://www.mitsubishielectric.com/fa"
+    },
+    {
+      "name": "Omron",
+      "products": ["Sysmac", "NX/NJ", "NA HMI", "TM Cobot"],
+      "github_org": null,
+      "docs_url": "https://www.ia.omron.com"
+    },
+    {
+      "name": "Schneider Electric",
+      "products": ["EcoStruxure", "Modicon", "Unity Pro", "Citect SCADA"],
+      "github_org": null,
+      "docs_url": "https://www.se.com/us/en/download"
+    },
+    {
+      "name": "CODESYS",
+      "products": ["CODESYS V3", "CODESYS Visualization", "SoftMotion"],
+      "github_org": null,
+      "docs_url": "https://www.codesys.com"
+    },
+    {
+      "name": "B&R Automation",
+      "products": ["Automation Studio", "mapp Technology", "ACOPOS"],
+      "github_org": null,
+      "docs_url": "https://www.br-automation.com"
+    }
+  ]
+}

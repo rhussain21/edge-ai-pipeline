@@ -1,0 +1,54 @@
+{
+  "topics": [
+    {
+      "name": "PLC Programming",
+      "keywords": ["PLC", "programmable logic controller", "ladder logic", "structured text", "IEC 61131-3"],
+      "github_keywords": ["plc-programming", "openplc", "structured-text", "iec-61131"]
+    },
+    {
+      "name": "Industrial Networking",
+      "keywords": ["EtherNet/IP", "PROFINET", "OPC UA", "Modbus", "MQTT", "EtherCAT"],
+      "github_keywords": ["opcua", "profinet", "modbus", "industrial-iot", "ethercat"]
+    },
+    {
+      "name": "Machine Safety",
+      "keywords": ["machine safety", "safety PLC", "ISO 13849", "safety relay", "light curtain", "functional safety"],
+      "github_keywords": ["functional-safety", "safety-plc", "iso-13849"]
+    },
+    {
+      "name": "Industrial Cybersecurity",
+      "keywords": ["OT security", "IEC 62443", "SCADA security", "industrial firewall", "network segmentation"],
+      "github_keywords": ["ics-security", "scada-security", "ot-security", "iec62443"]
+    },
+    {
+      "name": "Robotics",
+      "keywords": ["industrial robot", "cobot", "robot programming", "end effector", "robot cell"],
+      "github_keywords": ["industrial-robotics", "robot-programming", "ros-industrial", "cobot"]
+    },
+    {
+      "name": "SCADA and HMI",
+      "keywords": ["SCADA", "HMI", "supervisory control", "alarm management", "process visualization"],
+      "github_keywords": ["scada", "hmi", "process-control", "supervisory-control"]
+    },
+    {
+      "name": "Motion Control",
+      "keywords": ["servo drive", "VFD", "variable frequency drive", "CNC", "stepper motor", "motion controller"],
+      "github_keywords": ["motion-control", "servo", "cnc-controller", "grbl"]
+    },
+    {
+      "name": "Manufacturing Systems",
+      "keywords": ["MES", "digital twin", "Industry 4.0", "smart manufacturing", "production scheduling"],
+      "github_keywords": ["digital-twin", "industry-4.0", "smart-manufacturing", "mes"]
+    },
+    {
+      "name": "Industrial AI and Edge Computing",
+      "keywords": ["predictive maintenance", "quality inspection", "edge AI", "industrial ML", "anomaly detection"],
+      "github_keywords": ["predictive-maintenance", "industrial-ai", "edge-computing", "anomaly-detection"]
+    },
+    {
+      "name": "Process Control",
+      "keywords": ["PID control", "process automation", "DCS", "batch control", "loop tuning"],
+      "github_keywords": ["pid-control", "process-control", "dcs", "batch-control"]
+    }
+  ]
+}

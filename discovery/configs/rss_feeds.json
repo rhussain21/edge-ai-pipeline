@@ -1,0 +1,64 @@
+{
+  "feeds": [
+    {
+      "url": "https://feeds.captivate.fm/manufacturing-happy-hour/",
+      "name": "Manufacturing Happy Hour",
+      "category": "podcast",
+      "publisher": "Manufacturing Happy Hour"
+    },
+    {
+      "url": "https://feeds.transistor.fm/manufacturing-hub",
+      "name": "Manufacturing Hub",
+      "category": "podcast",
+      "publisher": "Manufacturing Hub"
+    },
+    {
+      "url": "https://feeds.buzzsprout.com/1027735.rss",
+      "name": "The Robot Industry Podcast",
+      "category": "podcast",
+      "publisher": "Robot Industry"
+    },
+    {
+      "url": "https://feeds.castos.com/8j1v",
+      "name": "Automation Matters",
+      "category": "podcast",
+      "publisher": "Automation Matters"
+    },
+    {
+      "url": "https://feeds.resonaterecordings.com/the-manufacturing-executive-podcast",
+      "name": "The Manufacturing Executive",
+      "category": "podcast",
+      "publisher": "Manufacturing Executive"
+    },
+    {
+      "url": "https://rss.libsyn.com/shows/219497/destinations/2381312.xml",
+      "name": "Industrial Automation Podcast",
+      "category": "podcast",
+      "publisher": "Industrial Automation"
+    },
+    {
+      "url": "https://rss.libsyn.com/shows/61271/destinations/237805.xml",
+      "name": "The PLC Talk Podcast",
+      "category": "podcast",
+      "publisher": "PLC Talk"
+    },
+    {
+      "url": "https://www.automationworld.com/rss.xml",
+      "name": "Automation World",
+      "category": "news",
+      "publisher": "Automation World"
+    },
+    {
+      "url": "https://www.controleng.com/feed/",
+      "name": "Control Engineering",
+      "category": "news",
+      "publisher": "Control Engineering"
+    },
+    {
+      "url": "https://www.therobotreport.com/feed/",
+      "name": "The Robot Report",
+      "category": "news",
+      "publisher": "The Robot Report"
+    }
+  ]
+}

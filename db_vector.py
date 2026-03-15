@@ -404,14 +404,14 @@ class VectorDB:
 if __name__ == "__main__":
     load_dotenv()
 
-    VEC_DB_PATH = os.getenv("VEC_DB_PATH", "Vectors/")
+    VEC_DB_PATH = os.getenv("VEC_DB_PATH", "Vectors/corpus_vectors/")
 
     print("Testing Enhanced Vector Database...")
 
     vector_db = VectorDB(VEC_DB_PATH, use_builtin_embeddings=True)
 
-    print("\n=== Loading Industry Signals Vectors ===")
-    load_success = vector_db.load("industry_signals_vectors_updated")
+    print("\n=== Loading Corpus Vectors ===")
+    load_success = vector_db.load("corpus_vectors")
 
     if not load_success:
         print("No existing vectors found. Creating test data...")
@@ -480,7 +480,7 @@ if __name__ == "__main__":
         print(f"{key}: {value}")
 
     print("\n=== Saving Updated Vectors ===")
-    save_success = vector_db.save("industry_signals_vectors_updated")
+    save_success = vector_db.save("corpus_vectors")
     if save_success:
         print("Successfully saved updated vectors!")
     else:
