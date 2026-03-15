@@ -1,13 +1,16 @@
 # Edge AI Pipeline - Work in Progress
+*A system for discovering and curating industrial automation knowledge for AI applications.*
 
+Industrial automation knowledge is scattered across vendor manuals, standards, whitepapers, and open-source projects, making it difficult to build systems that truly understand the domain.
 
-The purpose of this project is two create a dual AI system that will generate content and automatically assess it. This demonstrates how multiple AI agents can coordinate to handle complex tasks from edge devices (in this case, a Jetson Orin Nano) to local processing systems (Macbook Pro for now). Details to follow!
+This project builds a pipeline to discover, filter, and organize high-quality technical sources into a structured corpus of industry-relevant data. The system combines automated discovery workflows with AI-assisted classification and includes ongoing development of both client tools and edge deployments on NVIDIA Jetson.
 
+More details to follow.
 
 ## Update History
 
-- 03/03/2026 - uploaded MVP. Multi-agent system that can handle queries and simple routing
-- 02/16/2026 - Add initial files for creating basic components of data infrastructure: etl script, relational and vector database
+- 03/03/2026 — Uploaded MVP: multi-agent system capable of handling queries and basic routing
+- 02/16/2026 — Initial data infrastructure components (ETL pipeline, relational DB, vector DB)
 
 ## License
-This project is licensed under the MIT License — see the LICENSE file for details.
+This project is licensed under the MIT License — see the `LICENSE` file for details.
