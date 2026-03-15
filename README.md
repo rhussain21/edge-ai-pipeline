@@ -9,7 +9,7 @@ More details to follow.
 
 ## Update History
 
-- 03/03/2026 — Uploaded MVP: multi-agent system capable of handling queries and basic routing
+- 03/03/2026 — Initial prototype: client-side multi-agent system for basic information retrieval and routing
 - 02/16/2026 — Initial data infrastructure components (ETL pipeline, relational DB, vector DB)
 
 ## License
