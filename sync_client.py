@@ -6,8 +6,7 @@ import subprocess
 import requests
 import logging
 from datetime import datetime, timezone
-from dotenv import load_dotenv
-load_dotenv()
+from device_config import config
 
 from db_relational import relationalDB
 

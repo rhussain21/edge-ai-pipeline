@@ -3,9 +3,7 @@
 from typing import Dict, Any
 import logging
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+from device_config import config
 
 if not logging.getLogger().handlers:
     logging.basicConfig(

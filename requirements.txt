@@ -62,6 +62,11 @@ scipy==1.11.4            # Scientific computing
 # langchain-community==0.0.1  # LangChain community
 
 # ============================================
+# Web Search
+# ============================================
+tavily-python==0.3.2     # Tavily search API
+
+# ============================================
 # API Server & Web Framework
 # ============================================
 fastapi==0.104.1         # API framework

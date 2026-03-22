@@ -21,7 +21,41 @@ class OllamaClient:
             }
         )
         
-        return response.json()["response"]
+        response.raise_for_status()
+        result = response.json()
+        
+        # Handle different response formats
+        if "response" in result:
+            return result["response"]
+        elif "error" in result:
+            raise RuntimeError(f"Ollama error: {result['error']}")
+        else:
+            # Unexpected format - show what we got
+            import json
+            raise KeyError(f"Unexpected Ollama response format. Got: {json.dumps(result, indent=2)}")
+
+class GeminiClient:
+    def __init__(self, model="gemini-2.5-flash"):
+        from google import genai
+        from google.genai import types
+        self.model_name = model
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY environment variable not set")
+        self._client = genai.Client(api_key=api_key)
+        self._types = types
+
+    def generate(self, prompt, system_prompt, temperature=0.7):
+        full_prompt = f"{system_prompt}\n\n{prompt}"
+        response = self._client.models.generate_content(
+            model=self.model_name,
+            contents=full_prompt,
+            config=self._types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=8192,
+            )
+        )
+        return response.text
 
 class LLMClient:
     def __init__(self, vector_db, relational_db, llm_client):

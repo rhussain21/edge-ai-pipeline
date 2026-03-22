@@ -28,7 +28,7 @@ class InternetSearchTool:
         elif self.provider == "brave" and not api_key:
             raise ValueError("Brave requires api_key")
     
-    def execute(self, action: str, query: str, max_results: int = 5, **kwargs) -> Dict[str, Any]:
+    def execute(self, action: str, query: str, max_results: int = 10, **kwargs) -> Dict[str, Any]:
         if action != "search":
             return {"error": f"Unknown action '{action}'. Only 'search' is supported"}
         
@@ -150,12 +150,6 @@ class InternetSearchTool:
 
 from typing import Protocol as _Protocol
 
-try:
-    from discovery.models import CandidateSource, SearchQuery as _SearchQuery
-    _DISCOVERY_MODELS = True
-except ImportError:
-    _DISCOVERY_MODELS = False
-
 
 class SearchProvider(_Protocol):
     """Protocol for pluggable search backends."""
@@ -223,7 +217,9 @@ class WebSearchAdapter:
 
     def search(self, query) -> list:
         """Execute web search and normalize results to CandidateSource."""
-        if not _DISCOVERY_MODELS:
+        try:
+            from discovery.models import CandidateSource
+        except ImportError:
             logger.error("discovery.models not available — cannot normalize results")
             return []
 

@@ -47,6 +47,7 @@ RUN python3 -m pip install -i https://pypi.org/simple --no-cache-dir \
     requests \
     langextract \
     lxml \
+    tavily-python \
     tqdm
 
 COPY . .

@@ -4,12 +4,15 @@ from datetime import datetime
 from pathlib import Path
 import re
 import hashlib
-VECTOR_PATH = os.getenv("JETSON_VECTOR_PATH", os.getenv("VECTOR_DB_PATH", "Vectors/"))
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device_config import config
+VECTOR_PATH = os.getenv("VECTOR_PATH", os.getenv("JETSON_VECTOR_PATH", os.getenv("VECTOR_DB_PATH", "Vectors/")))
 import pdfplumber
 try:
     import fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
-    print("PyMuPDF available")
+    #print("PyMuPDF available")
 except ImportError:
     PYMUPDF_AVAILABLE = False
     print("PyMuPDF not available")
@@ -21,10 +24,8 @@ import tiktoken
 from db_relational import relationalDB
 from db_vector import VectorDB
 from etl.signals import SignalPipeline
+from logging_config import syslog
 
-from dotenv import load_dotenv
-
-load_dotenv()
 
 CUDA_AVAILABLE = False
 DEVICE = "cpu"
@@ -329,20 +330,27 @@ class contentETL:
 
     def load_metadata(self, file_path):
         """Load metadata from JSON file if exists."""
+        stem = os.path.splitext(file_path)[0]
         metadata_patterns = [
+            stem + '_metadata.json',
             file_path.replace('.mp3', '_metadata.json'),
-            file_path + '_metadata.json',
+            file_path.replace('.html', '_metadata.json'),
+            file_path.replace('.htm', '_metadata.json'),
             file_path.replace('.pdf', '_metadata.json'),
             file_path.replace('.docx', '_metadata.json'),
             file_path.replace('.txt', '_metadata.json'),
+            file_path + '_metadata.json',
         ]
-        
+        seen = set()
         for metadata_file in metadata_patterns:
+            if metadata_file in seen:
+                continue
+            seen.add(metadata_file)
             if os.path.exists(metadata_file):
                 try:
                     with open(metadata_file, 'r', encoding='utf-8') as f:
                         return json.load(f)
-                except UnicodeDecodeError:
+                except (UnicodeDecodeError, ValueError):
                     try:
                         with open(metadata_file, 'r', encoding='latin-1') as f:
                             return json.load(f)
@@ -548,11 +556,45 @@ class contentETL:
         result = self.db.add_content_metadata(data)
         print(f"Successfully added to database with ID: {result}")
         
+        # Write structured metadata to content_metadata table
+        try:
+            self.db.add_content_metadata_record(result, data['metadata'])
+            print(f"Metadata record added for content_id={result}")
+        except Exception as e:
+            print(f"Warning: Failed to write content_metadata record: {e}")
+        
         if file_type == 'audio':
             self.sources.mark_episode_processed(file_path, 'processed')
         
+        syslog.info('pipeline', 'content_added', f'Processed: {title[:80]}',
+                     content_id=result, duration_sec=duration_seconds,
+                     details={'content_type': data['content_type'], 'file_size_mb': file_size_mb})
         print(f"Successfully processed: {file_path} (ID: {result})")
         return result
+
+    def _create_segments(self, transcript, max_chars=1000):
+        """Create segments from transcript for vectorization."""
+        if not transcript:
+            return []
+        
+        segments = []
+        words = transcript.split()
+        current_segment = []
+        current_length = 0
+        
+        for word in words:
+            current_segment.append(word)
+            current_length += len(word) + 1  # +1 for space
+            
+            if current_length >= max_chars:
+                segments.append(' '.join(current_segment))
+                current_segment = []
+                current_length = 0
+        
+        if current_segment:
+            segments.append(' '.join(current_segment))
+        
+        return segments
 
     def get_pending_vectorization(self, limit=100):
         """Get content that needs vectorization."""
@@ -643,31 +685,98 @@ class contentETL:
         
         return len(pending_items)
 
-    def process_pending_audio(self):
-        """Process only audio files that haven't been processed yet."""
-        pending_episodes = self.sources.get_pending_episodes()
+    def get_pending_content(self, content_type=None, limit=None):
+        """Get content pending transcription from DB."""
+        try:
+            query = """
+                SELECT id, title, file_path, content_type, source_name
+                FROM content
+                WHERE transcription_status = 'pending'
+            """
+            params = []
+            
+            if content_type:
+                query += " AND content_type = ?"
+                params.append(content_type)
+            
+            query += " ORDER BY created_at ASC"
+            
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
+            
+            results = self.db.query(query, params)
+            return [dict(r) for r in results]
+            
+        except Exception as e:
+            print(f"Error getting pending content: {e}")
+            return []
+
+    def process_pending_content(self, content_type=None):
+        """Process content pending transcription (audio, pdf, html, text)."""
+        pending_content = self.get_pending_content(content_type=content_type)
         
-        if not pending_episodes:
-            print("No pending audio episodes to process")
+        if not pending_content:
+            print("No pending content to process")
             return []
         
-        print(f"Found {len(pending_episodes)} pending episodes")
+        print(f"Found {len(pending_content)} pending items")
         processed_ids = []
         
-        for episode in pending_episodes:
-            file_path = episode['file_path']
-            print(f"Processing: {episode['episode_title']}")
+        for item in pending_content:
+            content_id = item['id']
+            file_path = item['file_path']
+            title = item['title']
+            
+            print(f"Processing: {title} (ID: {content_id})")
             
             try:
-                result = self.add_content_data(file_path)
-                if result is not None:
-                    processed_ids.append(result)
-                    print(f"Successfully processed: {episode['episode_title']} (ID: {result})")
-                else:
-                    print(f"Skipped: {episode['episode_title']} (already processed or duplicate)")
+                # Check if file exists
+                if not os.path.exists(file_path):
+                    print(f"  File not found: {file_path}")
+                    self.db.update_record(content_id, {'transcription_status': 'failed'})
+                    continue
+                
+                # Extract content (transcribe audio)
+                content, file_type = self.extract_content(file_path)
+                if not content or "transcription failed" in content.lower():
+                    print(f"  Transcription failed for: {title}")
+                    self.db.update_record(content_id, {'transcription_status': 'failed'})
+                    continue
+                
+                # Generate hash (no duplicate check since we're updating existing record)
+                content_hash = self._generate_file_hash(file_path)
+                if content_hash is None:
+                    print(f"  Could not generate hash for: {file_path}")
+                    self.db.update_record(content_id, {'transcription_status': 'failed'})
+                    continue
+                
+                # Update existing record with transcription results
+                is_audio = item.get('content_type') == 'audio'
+                update_data = {
+                    'transcript': content,
+                    'transcription_date': datetime.now().isoformat() if is_audio else None,
+                    'transcript_method': 'whisper' if is_audio else None,
+                    'transcription_status': 'completed' if is_audio else 'NA',
+                    'content_hash': content_hash,
+                    'language': 'en',
+                    'segments': json.dumps(self._create_segments(content)) if content else []
+                }
+                
+                # Get file size and duration if available
+                try:
+                    file_size_mb = round(os.path.getsize(file_path) / (1024 * 1024), 2)
+                    update_data['file_size_mb'] = file_size_mb
+                except:
+                    pass
+                
+                self.db.update_record(content_id, update_data)
+                processed_ids.append(content_id)
+                print(f"  ✓ Transcribed: {title}")
+                
             except Exception as e:
-                print(f"Failed to process {episode['episode_title']}: {e}")
-                self.sources.mark_episode_processed(file_path, 'failed')
+                print(f"  ✗ Failed to process {title}: {e}")
+                self.db.update_record(content_id, {'transcription_status': 'failed'})
         
         return processed_ids
 
@@ -757,9 +866,9 @@ class contentETL:
 
 if __name__ == '__main__':
     print("Loading environment variables...")
-    media_dir = os.getenv("MEDIA_DIR", "media")
-    db_path = os.getenv("JETSON_DB_PATH", "Database/industry_signals.db")
-    vector_base = os.getenv("JETSON_VECTOR_PATH", os.getenv("VECTOR_DB_PATH", "Vectors/"))
+    media_dir = 'media/' #os.getenv("MEDIA_DIR", "media")
+    db_path = 'Database/industry_signals.db' #os.getenv("JETSON_DB_PATH", "Database/industry_signals.db")
+    vector_base = 'Vectors/' #os.getenv("JETSON_VECTOR_PATH", os.getenv("VECTOR_DB_PATH", "Vectors/"))
 
     print(f"Media directory: {media_dir}")
     print(f"Database path: {db_path}")

@@ -90,9 +90,12 @@ class RSSAdapter:
         logger.debug(f"Fetching RSS feed: {name} ({url})")
         feed = feedparser.parse(url)
 
-        if feed.bozo and not feed.entries:
-            logger.warning(f"Feed parse error for {url}: {feed.bozo_exception}")
-            return []
+        if feed.bozo:
+            if not feed.entries:
+                logger.warning(f"Feed parse error for {url}: {feed.bozo_exception}")
+                return []
+            else:
+                logger.debug(f"Feed has minor parse issues but extracted {len(feed.entries)} entries: {url}")
 
         candidates = []
         for entry in feed.entries[:limit]:

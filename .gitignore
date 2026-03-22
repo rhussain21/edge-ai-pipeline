@@ -6,6 +6,8 @@ Dashboards/
 media/
 .chainlit/
 .env
+.env.mac
+.env.jetson
 __pycache__
 discovery/cache.db
 logs/

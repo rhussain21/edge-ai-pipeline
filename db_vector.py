@@ -402,9 +402,9 @@ class VectorDB:
 
 
 if __name__ == "__main__":
-    load_dotenv()
+    from device_config import config
 
-    VEC_DB_PATH = os.getenv("VEC_DB_PATH", "Vectors/corpus_vectors/")
+    VEC_DB_PATH = os.getenv("VEC_DB_PATH", config.CORPUS_VECTOR_PATH)
 
     print("Testing Enhanced Vector Database...")
 

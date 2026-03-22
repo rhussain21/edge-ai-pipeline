@@ -1,11 +1,11 @@
-
 import langextract as lx
 import textwrap
 import json
 import logging
-import os
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import List, Dict, Any, Optional
+from logging_config import syslog
+import pydantic
 from pydantic import BaseModel, Field, validator
 
 
@@ -202,14 +202,26 @@ class SignalPipeline:
                 for i, chunk in enumerate(chunks):
                     if len(chunks) > 1:
                         logger.info(f"Processing chunk {i+1}/{len(chunks)} for content_id={content_id}")
-                    result = lx.extract(
-                        text_or_documents=chunk,
-                        prompt_description=PROMPT,
-                        examples=EXAMPLES,
-                        model_id=self.llm,
-                        model_url=self.llm_url
-                    )
-                    all_signals.extend(self._parse_signals(result, content_id))
+                    
+                    try:
+                        result = lx.extract(
+                            text_or_documents=chunk,
+                            prompt_description=PROMPT,
+                            examples=EXAMPLES,
+                            model_id=self.llm,
+                            model_url=self.llm_url
+                        )
+                        all_signals.extend(self._parse_signals(result, content_id))
+                    except Exception as e:
+                        # Handle langextract JSON parsing errors gracefully
+                        error_msg = str(e)
+                        if "JSONDecodeError" in error_msg or "FormatParseError" in error_msg:
+                            logger.warning(f"LangExtract JSON parse error for chunk {i+1}, content_id={content_id}: {e}")
+                            # Continue with other chunks instead of failing the entire content
+                            continue
+                        else:
+                            # Re-raise non-JSON errors
+                            raise
 
                 stored_count = self._store_signals(all_signals)
                 logger.info(f"Stored {stored_count} signals")
@@ -224,11 +236,15 @@ class SignalPipeline:
 
                 results[content_id] = {'status': 'success', 'signals_stored': stored_count}
                 logger.info(f"Extracted and stored {stored_count} signals from content_id={content_id} ({row['title']})")
+                syslog.info('pipeline', 'signals', f'Extracted {stored_count} signals from {row["title"][:50]}',
+                            content_id=content_id, details={'chunks': len(chunks), 'processed': len(all_signals)})
             except Exception as e:
                 results[content_id] = {'status': 'failed', 'error': str(e)}
                 logger.error(f"Failed extraction for content_id={content_id}: {e}")
                 import traceback
                 logger.error(f"Full traceback for content_id={content_id}: {traceback.format_exc()}")
+                syslog.error('pipeline', 'signals', f'Signal extraction failed: {row["title"][:50]}',
+                             content_id=content_id, details={'error': str(e)})
                 continue
 
         return results
@@ -285,59 +301,12 @@ class SignalPipeline:
         """Store validated Pydantic signal models into the signals table.
 
         Returns the number of signals successfully inserted.
+        Uses db.insert_signal() which is backend-agnostic (DuckDB or PostgreSQL).
         """
         inserted = 0
         for signal in signals:
             try:
-                if self.db.backend == 'postgres':
-                    self.db.execute('''
-                        INSERT INTO signals (
-                            signal_type, entity, description, industry,
-                            impact_level, confidence, timeline,
-                            metadata_json, source_content_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        signal.signal_type,
-                        signal.entity,
-                        signal.description,
-                        signal.industry,
-                        signal.impact_level,
-                        signal.confidence,
-                        signal.timeline if hasattr(signal, 'timeline') else None,
-                        signal.metadata_json,
-                        signal.source_content_id
-                    ))
-                else:
-                    try:
-                        result = self.db.execute("SELECT nextval('signal_id_seq')").fetchone()
-                        next_id = result[0] if result else None
-                    except:
-                        try:
-                            self.db.execute("CREATE SEQUENCE signal_id_seq START 1")
-                            result = self.db.execute("SELECT nextval('signal_id_seq')").fetchone()
-                            next_id = result[0] if result else 1
-                        except:
-                            max_result = self.db.execute("SELECT COALESCE(MAX(id), 0) FROM signals").fetchone()
-                            next_id = (max_result[0] if max_result else 0) + 1
-
-                    self.db.execute('''
-                        INSERT INTO signals (
-                            id, signal_type, entity, description, industry,
-                            impact_level, confidence, timeline,
-                            metadata_json, source_content_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        next_id,
-                        signal.signal_type,
-                        signal.entity,
-                        signal.description,
-                        signal.industry,
-                        signal.impact_level,
-                        signal.confidence,
-                        signal.timeline if hasattr(signal, 'timeline') else None,
-                        signal.metadata_json,
-                        signal.source_content_id
-                    ))
+                self.db.insert_signal(signal)
                 inserted += 1
             except Exception as e:
                 logger.error(f"Failed to store signal '{signal.entity}': {e}")
@@ -348,13 +317,12 @@ class SignalPipeline:
 if __name__ == "__main__":
 
         from db_relational import relationalDB
-        from dotenv import load_dotenv
-        load_dotenv()
+        from device_config import config
         import os
 
-        db_path = os.getenv("JETSON_DB_PATH")
-        model_id = os.getenv("JETSON_LLM")
-        model_url = os.getenv("JETSON_LLM_URL")
+        db_path = config.DB_PATH
+        model_id = config.LLM_MODEL
+        model_url = config.LLM_URL
         db = relationalDB(db_path)
 
         #query = "SELECT id, title, transcript FROM content WHERE id=5"

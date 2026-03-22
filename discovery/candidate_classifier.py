@@ -80,7 +80,7 @@ class CandidateClassifier:
         self,
         llm_generate_fn: Callable,
         cache: Optional[TaskCache] = None,
-        batch_size: int = 10,
+        batch_size: int = 25,
         temperature: float = 0.1,
         model_name: str = "ollama",
     ):

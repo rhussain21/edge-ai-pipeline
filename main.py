@@ -8,8 +8,7 @@ Architecture:
       └── WebAgent     -> InternetSearchTool + LLM
 """
 
-from dotenv import load_dotenv
-load_dotenv()
+from device_config import config
 
 from agents.factory import AgentFactory
 from logging_config import setup_debug_logging

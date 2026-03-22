@@ -131,6 +131,10 @@ class relationalDB:
                     transcription_status TEXT DEFAULT 'pending',
                     vectorization_status TEXT DEFAULT 'pending',
                     signal_processed BOOLEAN DEFAULT FALSE,
+                    screening_status TEXT DEFAULT 'pending',
+                    screening_reason TEXT,
+                    screened_at TIMESTAMP,
+                    marked_for_deletion BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     segments TEXT,
@@ -182,6 +186,60 @@ class relationalDB:
             ''')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_segments_content ON transcript_segments(content_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_segments_speaker ON transcript_segments(speaker_id)')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS content_metadata (
+                    id SERIAL PRIMARY KEY,
+                    content_id INTEGER NOT NULL REFERENCES content(id) ON UPDATE CASCADE,
+                    source_url TEXT,
+                    publisher TEXT,
+                    doc_type TEXT,
+                    discovery_confidence REAL,
+                    discovery_reason TEXT,
+                    topic_tags TEXT,
+                    authority TEXT,
+                    adapter TEXT,
+                    discovered_at TEXT,
+                    download_timestamp TEXT,
+                    processing_status TEXT DEFAULT 'downloaded',
+                    original_format TEXT,
+                    extraction_method TEXT,
+                    podcast_name TEXT,
+                    episode_description TEXT,
+                    episode_author TEXT,
+                    episode_summary TEXT,
+                    episode_keywords TEXT,
+                    episode_number TEXT,
+                    episode_season TEXT,
+                    episode_type TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_cm_content_id ON content_metadata(content_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cm_doc_type ON content_metadata(doc_type)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cm_adapter ON content_metadata(adapter)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cm_publisher ON content_metadata(publisher)')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_logs (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    level TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    action TEXT,
+                    message TEXT NOT NULL,
+                    details_json TEXT,
+                    content_id INTEGER,
+                    duration_sec REAL,
+                    run_id TEXT
+                )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_logs_level ON system_logs(level)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_logs_source ON system_logs(source)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON system_logs(timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_logs_run_id ON system_logs(run_id)')
+
+            cursor.execute("SELECT setval(pg_get_serial_sequence('content','id'), COALESCE((SELECT MAX(id) FROM content), 0), true)")
+            cursor.execute("SELECT setval(pg_get_serial_sequence('signals','id'), COALESCE((SELECT MAX(id) FROM signals), 0), true)")
             print("PostgreSQL schema initialized")
         finally:
             cursor.close()
@@ -208,6 +266,10 @@ class relationalDB:
                 transcription_status TEXT DEFAULT 'pending',
                 vectorization_status TEXT DEFAULT 'pending',
                 signal_processed BOOLEAN DEFAULT FALSE,
+                screening_status TEXT DEFAULT 'pending',
+                screening_reason TEXT,
+                screened_at TEXT,
+                marked_for_deletion BOOLEAN DEFAULT FALSE,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 segments TEXT,
@@ -259,6 +321,58 @@ class relationalDB:
         ''')
         self.con.execute('CREATE INDEX IF NOT EXISTS idx_segments_content ON transcript_segments(content_id)')
         self.con.execute('CREATE INDEX IF NOT EXISTS idx_segments_speaker ON transcript_segments(speaker_id)')
+
+        self.con.execute('''
+            CREATE TABLE IF NOT EXISTS content_metadata (
+                id INTEGER PRIMARY KEY,
+                content_id INTEGER NOT NULL,
+                source_url TEXT,
+                publisher TEXT,
+                doc_type TEXT,
+                discovery_confidence REAL,
+                discovery_reason TEXT,
+                topic_tags TEXT,
+                authority TEXT,
+                adapter TEXT,
+                discovered_at TEXT,
+                download_timestamp TEXT,
+                processing_status TEXT DEFAULT 'downloaded',
+                original_format TEXT,
+                extraction_method TEXT,
+                podcast_name TEXT,
+                episode_description TEXT,
+                episode_author TEXT,
+                episode_summary TEXT,
+                episode_keywords TEXT,
+                episode_number TEXT,
+                episode_season TEXT,
+                episode_type TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        self.con.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_cm_content_id ON content_metadata(content_id)')
+        self.con.execute('CREATE INDEX IF NOT EXISTS idx_cm_doc_type ON content_metadata(doc_type)')
+        self.con.execute('CREATE INDEX IF NOT EXISTS idx_cm_adapter ON content_metadata(adapter)')
+        self.con.execute('CREATE INDEX IF NOT EXISTS idx_cm_publisher ON content_metadata(publisher)')
+
+        self.con.execute('''
+            CREATE TABLE IF NOT EXISTS system_logs (
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                level TEXT NOT NULL,
+                source TEXT NOT NULL,
+                action TEXT,
+                message TEXT NOT NULL,
+                details_json TEXT,
+                content_id INTEGER,
+                duration_sec REAL,
+                run_id TEXT
+            )
+        ''')
+        self.con.execute('CREATE INDEX IF NOT EXISTS idx_logs_level ON system_logs(level)')
+        self.con.execute('CREATE INDEX IF NOT EXISTS idx_logs_source ON system_logs(source)')
+        self.con.execute('CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON system_logs(timestamp)')
+        self.con.execute('CREATE INDEX IF NOT EXISTS idx_logs_run_id ON system_logs(run_id)')
     
     def _migrate_schema(self):
         """Add missing columns to existing database."""
@@ -278,9 +392,16 @@ class relationalDB:
             ("verification_status", "ALTER TABLE content ADD COLUMN verification_status TEXT DEFAULT 'unverified'", None),
             ("verified_by", "ALTER TABLE content ADD COLUMN verified_by TEXT", None),
             ("verified_at", "ALTER TABLE content ADD COLUMN verified_at TEXT", None),
-            ("training_set_label", "ALTER TABLE content ADD COLUMN training_set_label TEXT", None),
+            ("training_set_label", "ALTER TABLE content ADD COLUMN training_set_label TEXT",
+             "CREATE INDEX IF NOT EXISTS idx_training_set_label ON content(training_set_label)"),
             ("signal_processed", "ALTER TABLE content ADD COLUMN signal_processed BOOLEAN DEFAULT FALSE",
              "CREATE INDEX IF NOT EXISTS idx_signal_processed ON content(signal_processed)"),
+            ("screening_status", "ALTER TABLE content ADD COLUMN screening_status TEXT DEFAULT 'pending'",
+             "CREATE INDEX IF NOT EXISTS idx_screening_status ON content(screening_status)"),
+            ("screening_reason", "ALTER TABLE content ADD COLUMN screening_reason TEXT", None),
+            ("screened_at", "ALTER TABLE content ADD COLUMN screened_at TEXT", None),
+            ("marked_for_deletion", "ALTER TABLE content ADD COLUMN marked_for_deletion BOOLEAN DEFAULT FALSE",
+             "CREATE INDEX IF NOT EXISTS idx_marked_deletion ON content(marked_for_deletion)"),
         ]
         
         # Signal table migrations
@@ -314,6 +435,23 @@ class relationalDB:
                     print(f"Migration: added signal column '{column}'")
                 else:
                     print(f"Migration check failed for signal '{column}': {e}")
+
+        # DuckDB only: drop any FK constraints on signals table.
+        # DuckDB FK enforcement causes UPDATE to fail on parent rows even when only
+        # non-PK columns are changed — a known DuckDB limitation. PostgreSQL handles
+        # FKs correctly and should keep its constraints.
+        if self.backend != 'postgres':
+            try:
+                fk_constraints = self.con.execute("""
+                    SELECT constraint_name
+                    FROM information_schema.table_constraints
+                    WHERE table_name = 'signals' AND constraint_type = 'FOREIGN KEY'
+                """).fetchall()
+                for (name,) in fk_constraints:
+                    self.con.execute(f"ALTER TABLE signals DROP CONSTRAINT {name}")
+                    print(f"Migration: dropped DuckDB FK constraint '{name}' on signals")
+            except Exception as e:
+                print(f"Migration: FK constraint check skipped ({e})")
     
     def test_connection(self):
         try:
@@ -362,24 +500,19 @@ class relationalDB:
                         transcript, language, transcription_date, transcript_method, transcription_status,
                         vectorization_status, segments, metadata_json
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (file_path) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
                     RETURNING id
                 ''', values)
                 result = cursor.fetchone()
                 return result[0] if result else None
+            except Exception:
+                self.con.rollback()
+                raise
             finally:
                 cursor.close()
         else:
-            try:
-                result = self.con.execute("SELECT nextval('content_id_seq')").fetchone()
-                next_id = result[0] if result else None
-            except:
-                try:
-                    self.con.execute("CREATE SEQUENCE content_id_seq START 1")
-                    result = self.con.execute("SELECT nextval('content_id_seq')").fetchone()
-                    next_id = result[0] if result else 1
-                except:
-                    max_result = self.con.execute("SELECT COALESCE(MAX(id), 0) FROM content").fetchone()
-                    next_id = (max_result[0] if max_result else 0) + 1
+            max_result = self.con.execute("SELECT COALESCE(MAX(id), 0) FROM content").fetchone()
+            next_id = (max_result[0] if max_result else 0) + 1
             
             self.con.execute('''
                 INSERT INTO content (
@@ -392,6 +525,80 @@ class relationalDB:
             
             return next_id
     
+    def add_content_metadata_record(self, content_id: int, metadata: dict):
+        """Insert or update a row in content_metadata for a given content_id."""
+        fields = {
+            'source_url': metadata.get('url', metadata.get('source_url', '')),
+            'publisher': metadata.get('publisher', ''),
+            'doc_type': metadata.get('doc_type', ''),
+            'discovery_confidence': metadata.get('confidence', metadata.get('discovery_confidence')),
+            'discovery_reason': metadata.get('reason', metadata.get('discovery_reason', '')),
+            'topic_tags': json.dumps(metadata.get('topic_tags', [])) if isinstance(metadata.get('topic_tags'), list) else metadata.get('topic_tags', ''),
+            'authority': metadata.get('authority', ''),
+            'adapter': metadata.get('adapter', ''),
+            'discovered_at': metadata.get('discovered_at', ''),
+            'download_timestamp': metadata.get('download_timestamp', ''),
+            'processing_status': metadata.get('processing_status', 'downloaded'),
+            'original_format': metadata.get('original_format', ''),
+            'extraction_method': metadata.get('extraction_method', ''),
+            'podcast_name': metadata.get('podcast_name', ''),
+            'episode_description': metadata.get('description', metadata.get('episode_description', '')),
+            'episode_author': metadata.get('author', metadata.get('episode_author', '')),
+            'episode_summary': metadata.get('summary', metadata.get('episode_summary', '')),
+            'episode_keywords': metadata.get('keywords', metadata.get('episode_keywords', '')),
+            'episode_number': str(metadata.get('episode_number', '')) if metadata.get('episode_number') else '',
+            'episode_season': str(metadata.get('season', metadata.get('episode_season', ''))) if metadata.get('season') or metadata.get('episode_season') else '',
+            'episode_type': metadata.get('episode_type', ''),
+        }
+
+        columns = ['content_id'] + list(fields.keys())
+        placeholders = ', '.join(['?' for _ in columns])
+        values = [content_id] + list(fields.values())
+
+        if self.backend == 'postgres':
+            cursor = self.con.cursor()
+            try:
+                col_str = ', '.join(columns)
+                ph_str = ', '.join(['%s' for _ in columns])
+                update_str = ', '.join([f"{k} = EXCLUDED.{k}" for k in fields.keys()])
+                cursor.execute(f'''
+                    INSERT INTO content_metadata ({col_str})
+                    VALUES ({ph_str})
+                    ON CONFLICT (content_id) DO UPDATE SET {update_str}
+                ''', values)
+            except Exception:
+                self.con.rollback()
+                raise
+            finally:
+                cursor.close()
+        else:
+            # DuckDB: check if exists, then insert or update
+            existing = self.con.execute(
+                "SELECT id FROM content_metadata WHERE content_id = ?", [content_id]
+            ).fetchone()
+            if existing:
+                set_clause = ', '.join([f"{k} = ?" for k in fields.keys()])
+                self.con.execute(
+                    f"UPDATE content_metadata SET {set_clause} WHERE content_id = ?",
+                    list(fields.values()) + [content_id]
+                )
+            else:
+                max_result = self.con.execute("SELECT COALESCE(MAX(id), 0) FROM content_metadata").fetchone()
+                next_id = (max_result[0] if max_result else 0) + 1
+                col_str = ', '.join(['id'] + columns)
+                ph_str = ', '.join(['?' for _ in range(len(columns) + 1)])
+                self.con.execute(
+                    f"INSERT INTO content_metadata ({col_str}) VALUES ({ph_str})",
+                    [next_id] + values
+                )
+
+    def get_content_metadata(self, content_id: int) -> dict:
+        """Retrieve content_metadata record for a content_id."""
+        rows = self.query(
+            "SELECT * FROM content_metadata WHERE content_id = ?", [content_id]
+        )
+        return rows[0] if rows else {}
+
     def file_exists(self, file_path):
         try:
             result = self.execute("SELECT id FROM content WHERE file_path = ?", [file_path]).fetchone()
@@ -434,6 +641,57 @@ class relationalDB:
             print(f"Error updating record {record_id}: {e}")
             return False
     
+    def _next_id(self, table: str) -> int | None:
+        """
+        Return the next safe integer ID for a manual INSERT.
+        - DuckDB: MAX(id)+1 (no SERIAL support for manual inserts)
+        - PostgreSQL: None (SERIAL / RETURNING id handles it automatically)
+        """
+        if self.backend == 'postgres':
+            return None
+        result = self.con.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()
+        return (result[0] if result else 0) + 1
+
+    def insert_signal(self, signal) -> int | None:
+        """
+        Insert a validated Pydantic signal model into the signals table.
+        Backend-agnostic: callers never need to know about DuckDB vs PostgreSQL.
+        Returns the new row ID.
+        """
+        timeline = getattr(signal, 'timeline', None)
+        values = (
+            signal.signal_type, signal.entity, signal.description,
+            signal.industry, getattr(signal, 'impact_level', None),
+            signal.confidence, timeline, signal.metadata_json,
+            signal.source_content_id,
+        )
+
+        if self.backend == 'postgres':
+            cursor = self.con.cursor()
+            try:
+                cursor.execute('''
+                    INSERT INTO signals (
+                        signal_type, entity, description, industry,
+                        impact_level, confidence, timeline,
+                        metadata_json, source_content_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                ''', values)
+                result = cursor.fetchone()
+                return result[0] if result else None
+            finally:
+                cursor.close()
+        else:
+            next_id = self._next_id('signals')
+            self.con.execute('''
+                INSERT INTO signals (
+                    id, signal_type, entity, description, industry,
+                    impact_level, confidence, timeline,
+                    metadata_json, source_content_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (next_id,) + values)
+            return next_id
+
     def get_path_info(self):
         return {
             "original_requested": self.original_path,
@@ -588,10 +846,9 @@ class relationalDB:
 
 if __name__ == "__main__":
 
-    from dotenv import load_dotenv
-    load_dotenv()
+    from device_config import config
 
-    REL_DB_PATH = os.getenv("REL_DB_PATH", "Database/industry_signals.db")
+    REL_DB_PATH = os.getenv("REL_DB_PATH", config.DB_PATH)
 
     try:
         print("Creating database...")

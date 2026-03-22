@@ -9,8 +9,7 @@ import logging
 from pydantic import BaseModel
 from db_relational import relationalDB
 from db_vector import VectorDB
-from dotenv import load_dotenv
-load_dotenv()
+from device_config import config
 
 logger = logging.getLogger(__name__)
 

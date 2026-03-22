@@ -33,12 +33,10 @@ from discovery.models import (
 from discovery.query_planner import QueryPlanner
 from discovery.candidate_classifier import CandidateClassifier
 from discovery.deduper import Deduper
-from discovery.cache import TaskCache
-from tools.rss_reader import RSSAdapter
-from tools.web_search import WebSearchAdapter
-from tools.github_search import GitHubAdapter
+from discovery.cache import TaskCache, SourceHealthTracker
 
 logger = logging.getLogger(__name__)
+from logging_config import syslog
 
 
 class SourceDiscoveryService:
@@ -92,7 +90,11 @@ class SourceDiscoveryService:
         # Query planner (loads JSON configs)
         self.planner = QueryPlanner(config_dir=config_dir)
 
-        # Adapters
+        # Adapters (import here to avoid circular dependency)
+        from tools.rss_reader import RSSAdapter
+        from tools.web_search import WebSearchAdapter
+        from tools.github_search import GitHubAdapter
+        
         self.adapters = {
             "rss": RSSAdapter(feed_configs=self.planner.get_rss_feeds()),
             "web": WebSearchAdapter(),
@@ -102,15 +104,21 @@ class SourceDiscoveryService:
         # Deduper
         self.deduper = Deduper(existing_urls=existing_urls)
 
+        # Source health tracker (shared cache.db)
+        self.health_tracker = SourceHealthTracker(db_path=cache_db_path)
+
         # Classifier (optional — skip if no LLM provided)
         self.classifier = None
         if llm_generate_fn:
             cache = TaskCache(db_path=cache_db_path) if cache_db_path else TaskCache()
+            # Extract model name from the LLM client if available
+            model_name = getattr(llm_generate_fn.__self__, 'model_name', 'unknown') if hasattr(llm_generate_fn, '__self__') else 'unknown'
             self.classifier = CandidateClassifier(
                 llm_generate_fn=llm_generate_fn,
                 cache=cache,
                 batch_size=classifier_batch_size,
                 temperature=classifier_temperature,
+                model_name=model_name,
             )
 
     def run(
@@ -119,6 +127,7 @@ class SourceDiscoveryService:
         topic_filter: str = None,
         skip_classification: bool = False,
         rss_only: bool = False,
+        max_queries: int = None,
     ) -> DiscoveryResult:
         """
         Execute a full discovery run.
@@ -128,6 +137,7 @@ class SourceDiscoveryService:
             topic_filter: Optional topic string to narrow query generation.
             skip_classification: If True, skip LLM classification (useful for testing).
             rss_only: Shortcut to only run RSS feeds (no query planning needed).
+            max_queries: Cap total queries executed (useful for API quota limits).
 
         Returns:
             DiscoveryResult with approved and rejected candidates.
@@ -150,6 +160,9 @@ class SourceDiscoveryService:
             queries = []
         else:
             queries = self.planner.plan_queries(adapters=adapters, topic_filter=topic_filter)
+            if max_queries and len(queries) > max_queries:
+                logger.warning(f"Capping queries from {len(queries)} to {max_queries} (max_queries limit)")
+                queries = queries[:max_queries]
         result.queries_generated = len(queries)
         logger.info(f"Generated {len(queries)} search queries")
 
@@ -175,7 +188,7 @@ class SourceDiscoveryService:
                     result.errors.append(error_msg)
 
         # Web + GitHub: dispatch queries to their respective adapters
-        for query in queries:
+        for i, query in enumerate(queries, 1):
             if query.adapter == "rss":
                 continue  # Already handled above
 
@@ -184,13 +197,16 @@ class SourceDiscoveryService:
                 logger.warning(f"No adapter registered for: {query.adapter}")
                 continue
 
+            print(f"[{i}/{len(queries)}] Searching {query.adapter}: {query.query[:50]}...")
             try:
                 candidates = adapter.search(query)
+                print(f"[{i}/{len(queries)}] Found {len(candidates)} candidates")
                 all_candidates.extend(candidates)
             except Exception as e:
                 error_msg = f"Adapter {query.adapter} error for '{query.query}': {e}"
                 logger.error(error_msg)
                 result.errors.append(error_msg)
+                print(f"[{i}/{len(queries)}] ❌ {error_msg}")
 
         result.candidates_found = len(all_candidates)
         logger.info(f"Collected {len(all_candidates)} raw candidates")
@@ -223,6 +239,25 @@ class SourceDiscoveryService:
             result.candidates_approved = len(result.approved)
             result.candidates_rejected = len(result.rejected)
 
+            # Log per-source discovery stats
+            from collections import defaultdict
+            source_stats = defaultdict(lambda: {"approved": 0, "rejected": 0, "adapter": "unknown"})
+            for cc in classified:
+                src = cc.candidate.raw_metadata.get('feed_url') or cc.candidate.url or cc.candidate.publisher
+                source_stats[src]["adapter"] = cc.candidate.adapter
+                if cc.approved:
+                    source_stats[src]["approved"] += 1
+                else:
+                    source_stats[src]["rejected"] += 1
+            for src_url, stats in source_stats.items():
+                self.health_tracker.log_discovery_batch(
+                    source_url=src_url,
+                    adapter=stats["adapter"],
+                    approved=stats["approved"],
+                    rejected=stats["rejected"],
+                    run_id=run_id,
+                )
+
         result.completed_at = datetime.utcnow().isoformat()
 
         logger.info(
@@ -231,6 +266,19 @@ class SourceDiscoveryService:
             f"{result.candidates_rejected} rejected, "
             f"{result.candidates_deduped} deduped"
         )
+
+        syslog.info('discovery', 'run_complete',
+                     f'{result.candidates_approved} approved, {result.candidates_rejected} rejected, '
+                     f'{result.candidates_deduped} deduped from {result.candidates_found} raw',
+                     details={
+                         'run_id': run_id,
+                         'queries': result.queries_generated,
+                         'raw': result.candidates_found,
+                         'approved': result.candidates_approved,
+                         'rejected': result.candidates_rejected,
+                         'deduped': result.candidates_deduped,
+                         'errors': len(result.errors),
+                     })
 
         return result
 
@@ -246,27 +294,29 @@ class SourceDiscoveryService:
         Map these to your contentETL or relationalDB.upsert_records().
 
         TODO: Wire this to your DB layer. Example:
-            records = service.get_approved_for_ingestion(result)
-            for record in records:
-                db.execute("INSERT INTO content_queue ...", record)
+            db.upsert_records("content", self.get_approved_for_ingestion(result))
         """
-        records = []
+        approved = []
         for cc in result.approved:
-            c = cc.candidate
-            cl = cc.classification
-            records.append({
-                "title": c.title,
-                "url": c.url,
-                "source_type": c.source_type,
-                "publisher": c.publisher,
-                "snippet": c.snippet,
-                "doc_type": cl.doc_type,
-                "topic_tags": cl.topic_tags,
-                "authority": cl.authority_guess,
-                "confidence": cl.confidence,
-                "reason": cl.reason,
-                "adapter": c.adapter,
-                "query_used": c.query_used,
-                "discovered_at": c.discovered_at,
-            })
-        return records
+            candidate = cc.candidate
+            classification = cc.classification
+            
+            record = {
+                "url": candidate.url,
+                "title": candidate.title,
+                "publisher": candidate.publisher or "",
+                "source_type": candidate.source_type,
+                "snippet": candidate.snippet or "",
+                "adapter": candidate.adapter,
+                "query_used": candidate.query_used or "",
+                "doc_type": classification.doc_type,
+                "confidence": classification.confidence,
+                "reason": classification.reason,
+                "topic_tags": classification.topic_tags or [],
+                "authority": classification.authority_guess or "unknown",
+                "discovered_at": result.started_at,
+                # Add feed URL for RSS items to enable targeted downloading
+                "feed_url": candidate.raw_metadata.get('feed_url') if candidate.source_type in ['podcast', 'rss'] else None,
+            }
+            approved.append(record)
+        return approved
