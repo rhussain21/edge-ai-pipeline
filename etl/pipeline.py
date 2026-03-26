@@ -177,7 +177,8 @@ class contentETL:
     
 
     def extract_pdf_text(self, file_path):
-        """Extract text from PDF files with multiple library fallbacks"""
+        """Extract text from PDF files with multiple library fallbacks.
+        Strips NUL (0x00) characters that cause PostgreSQL insert failures."""
         print(f"Attempting PDF extraction for {file_path}")
         
         if PYMUPDF_AVAILABLE:
@@ -191,6 +192,8 @@ class contentETL:
                         text += page_text + "\n"
                 doc.close()
                 if text.strip():
+                    # Strip NUL bytes that some PDFs contain (breaks PostgreSQL)
+                    text = text.replace('\x00', '')
                     print(f"PyMuPDF extracted {len(text)} characters")
                     return text.strip()
                 else:
@@ -206,6 +209,8 @@ class contentETL:
                     page_text = page.extract_text()
                     if page_text:
                         text += page_text + "\n"
+                # Strip NUL bytes
+                text = text.replace('\x00', '')
                 return text.strip()
         except Exception as e:
             print(f"pdfplumber failed for {file_path}: {e}")
@@ -528,17 +533,45 @@ class contentETL:
         print(f"Created {len(segments)} segments from content")
         
         print("Preparing data for database insertion...")
+        # Map file_type to general content_type and specific source_type
+        CONTENT_TYPE_MAP = {
+            'audio': 'audio',
+            'pdf': 'text',
+            'html': 'html',
+            'text': 'text',
+            'docx': 'text',
+            'doc': 'text',
+            'video': 'video',
+        }
+        general_content_type = CONTENT_TYPE_MAP.get(file_type, 'text')
+        specific_source_type = file_type  # pdf, audio, html, text, docx, etc.
+
+        # Determine extraction hardware
+        if file_type == 'audio':
+            if MLX_WHISPER_AVAILABLE:
+                hw = 'metal'
+            elif CUDA_AVAILABLE:
+                hw = 'cuda'
+            else:
+                hw = 'cpu'
+        else:
+            hw = 'cpu'
+
         data = {
             'title': title,
-            'content_type': 'audio' if file_type == 'audio' else 'text',
-            'source_type': file_type,
+            'content_type': general_content_type,
+            'source_type': specific_source_type,
             'source_name': metadata.get('podcast_name', metadata.get('source', Path(file_path).name)),
             'file_path': file_path,
+            'audio_url': metadata.get('audio_url', 'N/A'),
             'transcript': content,
             'pub_date': metadata.get('pub_date', metadata.get('date', '')),
             'duration_seconds': duration_seconds,
             'file_size_mb': file_size_mb,
             'content_hash': content_hash,
+            'transcription_date': datetime.now().isoformat(),
+            'transcription_model': self._get_whisper_model_name() if file_type == 'audio' else 'N/A',
+            'extraction_hardware': hw,
             'segments': segments,
             'metadata': {
                 **metadata,
@@ -685,13 +718,26 @@ class contentETL:
         
         return len(pending_items)
 
+    def _get_whisper_model_name(self):
+        """Return the name of the loaded whisper model for metadata tracking."""
+        if self._whisper_model is None:
+            return 'N/A'
+        if hasattr(self, '_whisper_model_type'):
+            if self._whisper_model_type == 'faster':
+                return 'faster-whisper/tiny'
+            elif self._whisper_model_type == 'mlx':
+                return 'mlx-whisper/tiny'
+            else:
+                return 'openai-whisper/tiny'
+        return 'whisper/tiny'
+
     def get_pending_content(self, content_type=None, limit=None):
-        """Get content pending transcription from DB."""
+        """Get content pending extraction from DB."""
         try:
             query = """
                 SELECT id, title, file_path, content_type, source_name
                 FROM content
-                WHERE transcription_status = 'pending'
+                WHERE extraction_status = 'pending'
             """
             params = []
             
@@ -734,30 +780,43 @@ class contentETL:
                 # Check if file exists
                 if not os.path.exists(file_path):
                     print(f"  File not found: {file_path}")
-                    self.db.update_record(content_id, {'transcription_status': 'failed'})
+                    self.db.update_record(content_id, {'extraction_status': 'failed'})
                     continue
                 
-                # Extract content (transcribe audio)
+                # Extract content (transcribe audio or extract text)
                 content, file_type = self.extract_content(file_path)
-                if not content or "transcription failed" in content.lower():
-                    print(f"  Transcription failed for: {title}")
-                    self.db.update_record(content_id, {'transcription_status': 'failed'})
+                if not content or "extraction failed" in content.lower() or "transcription failed" in content.lower():
+                    print(f"  Extraction failed for: {title}")
+                    self.db.update_record(content_id, {'extraction_status': 'failed'})
                     continue
                 
                 # Generate hash (no duplicate check since we're updating existing record)
                 content_hash = self._generate_file_hash(file_path)
                 if content_hash is None:
                     print(f"  Could not generate hash for: {file_path}")
-                    self.db.update_record(content_id, {'transcription_status': 'failed'})
+                    self.db.update_record(content_id, {'extraction_status': 'failed'})
                     continue
                 
-                # Update existing record with transcription results
+                # Update existing record with extraction results
                 is_audio = item.get('content_type') == 'audio'
+
+                # Determine extraction hardware
+                if is_audio:
+                    if MLX_WHISPER_AVAILABLE:
+                        hw = 'metal'
+                    elif CUDA_AVAILABLE:
+                        hw = 'cuda'
+                    else:
+                        hw = 'cpu'
+                else:
+                    hw = 'cpu'
+
                 update_data = {
                     'transcript': content,
-                    'transcription_date': datetime.now().isoformat() if is_audio else None,
-                    'transcript_method': 'whisper' if is_audio else None,
-                    'transcription_status': 'completed' if is_audio else 'NA',
+                    'transcription_date': datetime.now().isoformat(),
+                    'transcription_model': self._get_whisper_model_name() if is_audio else 'N/A',
+                    'extraction_hardware': hw,
+                    'extraction_status': 'completed',
                     'content_hash': content_hash,
                     'language': 'en',
                     'segments': json.dumps(self._create_segments(content)) if content else []
@@ -776,7 +835,7 @@ class contentETL:
                 
             except Exception as e:
                 print(f"  ✗ Failed to process {title}: {e}")
-                self.db.update_record(content_id, {'transcription_status': 'failed'})
+                self.db.update_record(content_id, {'extraction_status': 'failed'})
         
         return processed_ids
 

@@ -127,8 +127,9 @@ class relationalDB:
                     transcript TEXT,
                     language TEXT,
                     transcription_date TEXT,
-                    transcript_method TEXT,
-                    transcription_status TEXT DEFAULT 'pending',
+                    transcription_model TEXT,
+                    extraction_hardware TEXT,
+                    extraction_status TEXT DEFAULT 'pending',
                     vectorization_status TEXT DEFAULT 'pending',
                     signal_processed BOOLEAN DEFAULT FALSE,
                     screening_status TEXT DEFAULT 'pending',
@@ -143,7 +144,14 @@ class relationalDB:
             ''')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_type ON content(content_type)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_source_type ON content(source_type)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_status ON content(transcription_status)')
+            try:
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_extraction_status ON content(extraction_status)')
+            except Exception as e:
+                # Column doesn't exist yet - will be added by migration
+                if "does not exist" in str(e) or "UndefinedColumn" in str(e):
+                    print(f"PostgreSQL init: skipped idx_extraction_status (column missing pre-migration)")
+                else:
+                    raise
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_date ON content(pub_date)')
 
             cursor.execute('''
@@ -160,7 +168,10 @@ class relationalDB:
                     source_content_id INTEGER NOT NULL REFERENCES content(id) ON UPDATE CASCADE,
                     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     vectorized BOOLEAN DEFAULT FALSE,
-                    vectorized_at TIMESTAMP
+                    vectorized_at TIMESTAMP,
+                    context_window TEXT,
+                    enriched_text TEXT,
+                    enrichment_version TEXT
                 )
             ''')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type)')
@@ -262,8 +273,9 @@ class relationalDB:
                 transcript TEXT,
                 language TEXT,
                 transcription_date TEXT,
-                transcript_method TEXT,
-                transcription_status TEXT DEFAULT 'pending',
+                transcription_model TEXT,
+                extraction_hardware TEXT,
+                extraction_status TEXT DEFAULT 'pending',
                 vectorization_status TEXT DEFAULT 'pending',
                 signal_processed BOOLEAN DEFAULT FALSE,
                 screening_status TEXT DEFAULT 'pending',
@@ -278,7 +290,10 @@ class relationalDB:
         ''')
         self.con.execute('CREATE INDEX IF NOT EXISTS idx_content_type ON content(content_type)')
         self.con.execute('CREATE INDEX IF NOT EXISTS idx_source_type ON content(source_type)')
-        self.con.execute('CREATE INDEX IF NOT EXISTS idx_content_status ON content(transcription_status)')
+        try:
+            self.con.execute('CREATE INDEX IF NOT EXISTS idx_extraction_status ON content(extraction_status)')
+        except Exception as e:
+            print(f"DuckDB init: skipped idx_extraction_status (column missing pre-migration): {e}")
         self.con.execute('CREATE INDEX IF NOT EXISTS idx_content_date ON content(pub_date)')
 
         self.con.execute('''
@@ -295,7 +310,10 @@ class relationalDB:
                 source_content_id INTEGER NOT NULL,
                 extracted_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 vectorized BOOLEAN DEFAULT FALSE,
-                vectorized_at TEXT
+                vectorized_at TEXT,
+                context_window TEXT,
+                enriched_text TEXT,
+                enrichment_version TEXT
             )
         ''')
         self.con.execute('CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type)')
@@ -379,21 +397,11 @@ class relationalDB:
         migrations = [
             ("content_hash", "ALTER TABLE content ADD COLUMN content_hash TEXT",
              "CREATE INDEX IF NOT EXISTS idx_content_hash ON content(content_hash)"),
-            ("speaker_count", "ALTER TABLE content ADD COLUMN speaker_count INTEGER", None),
-            ("speakers_json", "ALTER TABLE content ADD COLUMN speakers_json TEXT", None),
-            ("diarization_model", "ALTER TABLE content ADD COLUMN diarization_model TEXT", None),
-            ("diarization_confidence", "ALTER TABLE content ADD COLUMN diarization_confidence REAL", None),
             ("transcription_model", "ALTER TABLE content ADD COLUMN transcription_model TEXT", None),
-            ("model_version", "ALTER TABLE content ADD COLUMN model_version TEXT", None),
-            ("inference_time_seconds", "ALTER TABLE content ADD COLUMN inference_time_seconds REAL", None),
-            ("transcription_confidence", "ALTER TABLE content ADD COLUMN transcription_confidence REAL", None),
-            ("word_error_rate", "ALTER TABLE content ADD COLUMN word_error_rate REAL", None),
-            ("ground_truth_transcript", "ALTER TABLE content ADD COLUMN ground_truth_transcript TEXT", None),
+            ("extraction_hardware", "ALTER TABLE content ADD COLUMN extraction_hardware TEXT", None),
             ("verification_status", "ALTER TABLE content ADD COLUMN verification_status TEXT DEFAULT 'unverified'", None),
             ("verified_by", "ALTER TABLE content ADD COLUMN verified_by TEXT", None),
             ("verified_at", "ALTER TABLE content ADD COLUMN verified_at TEXT", None),
-            ("training_set_label", "ALTER TABLE content ADD COLUMN training_set_label TEXT",
-             "CREATE INDEX IF NOT EXISTS idx_training_set_label ON content(training_set_label)"),
             ("signal_processed", "ALTER TABLE content ADD COLUMN signal_processed BOOLEAN DEFAULT FALSE",
              "CREATE INDEX IF NOT EXISTS idx_signal_processed ON content(signal_processed)"),
             ("screening_status", "ALTER TABLE content ADD COLUMN screening_status TEXT DEFAULT 'pending'",
@@ -402,13 +410,40 @@ class relationalDB:
             ("screened_at", "ALTER TABLE content ADD COLUMN screened_at TEXT", None),
             ("marked_for_deletion", "ALTER TABLE content ADD COLUMN marked_for_deletion BOOLEAN DEFAULT FALSE",
              "CREATE INDEX IF NOT EXISTS idx_marked_deletion ON content(marked_for_deletion)"),
+            ("extraction_status", "ALTER TABLE content ADD COLUMN extraction_status TEXT DEFAULT 'pending'",
+             "CREATE INDEX IF NOT EXISTS idx_extraction_status ON content(extraction_status)"),
         ]
+
+        # Rename columns for existing databases (safe: only runs if old column exists)
+        rename_migrations = [
+            # (old_col, new_col, alter_sql) — postgres uses RENAME, duckdb uses RENAME too
+            ("transcription_status", "extraction_status",
+             "ALTER TABLE content RENAME COLUMN transcription_status TO extraction_status"),
+            ("transcript_method", "transcription_model",
+             "ALTER TABLE content RENAME COLUMN transcript_method TO transcription_model"),
+            ("model_version", "extraction_hardware",
+             "ALTER TABLE content RENAME COLUMN model_version TO extraction_hardware"),
+        ]
+        for old_col, new_col, alter_sql in rename_migrations:
+            try:
+                self.execute(f"SELECT {old_col} FROM content LIMIT 1").fetchone()
+                # Old column exists — rename it
+                try:
+                    self.execute(alter_sql)
+                    print(f"Migration: renamed '{old_col}' -> '{new_col}'")
+                except Exception:
+                    pass  # Already renamed or rename not supported
+            except Exception:
+                pass  # Old column doesn't exist — already migrated or new DB
         
         # Signal table migrations
         signal_migrations = [
             ("vectorized", "ALTER TABLE signals ADD COLUMN vectorized BOOLEAN DEFAULT FALSE",
              "CREATE INDEX IF NOT EXISTS idx_signal_vectorized ON signals(vectorized)"),
             ("vectorized_at", "ALTER TABLE signals ADD COLUMN vectorized_at TEXT", None),
+            ("context_window", "ALTER TABLE signals ADD COLUMN context_window TEXT", None),
+            ("enriched_text", "ALTER TABLE signals ADD COLUMN enriched_text TEXT", None),
+            ("enrichment_version", "ALTER TABLE signals ADD COLUMN enrichment_version TEXT", None),
         ]
 
         for column, alter_sql, index_sql in migrations:
@@ -464,10 +499,12 @@ class relationalDB:
         self.con.close()
     
     def add_content_metadata(self, content_data):
-        if content_data.get('content_type') == 'text':
-            transcription_status = 'NA'
-        else:
-            transcription_status = content_data.get('transcription_status', 'pending')
+        extraction_status = content_data.get('extraction_status', 'pending')
+        
+        # Strip NUL characters from transcript to avoid PostgreSQL errors
+        transcript = content_data.get('transcript')
+        if transcript and isinstance(transcript, str):
+            transcript = transcript.replace('\x00', '')
         
         values = (
             content_data.get('title'),
@@ -476,15 +513,16 @@ class relationalDB:
             content_data.get('source_name'),
             content_data.get('pub_date', ''),
             content_data.get('file_path'),
-            content_data.get('audio_url', ''),
+            content_data.get('audio_url', 'N/A'),
             content_data.get('duration_seconds'),
             content_data.get('file_size_mb'),
             content_data.get('content_hash'),
-            content_data.get('transcript'),
+            transcript,
             content_data.get('language', ''),
             content_data.get('transcription_date', ''),
-            content_data.get('transcript_method', ''),
-            transcription_status,
+            content_data.get('transcription_model', 'N/A'),
+            content_data.get('extraction_hardware', ''),
+            extraction_status,
             content_data.get('vectorization_status', 'pending'),
             json.dumps(content_data.get('segments', [])),
             json.dumps(content_data.get('metadata', {}))
@@ -497,9 +535,9 @@ class relationalDB:
                     INSERT INTO content (
                         title, content_type, source_type, source_name, pub_date, file_path,
                         audio_url, duration_seconds, file_size_mb, content_hash,
-                        transcript, language, transcription_date, transcript_method, transcription_status,
-                        vectorization_status, segments, metadata_json
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        transcript, language, transcription_date, transcription_model, extraction_hardware,
+                        extraction_status, vectorization_status, segments, metadata_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (file_path) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
                     RETURNING id
                 ''', values)
@@ -518,9 +556,9 @@ class relationalDB:
                 INSERT INTO content (
                     id, title, content_type, source_type, source_name, pub_date, file_path,
                     audio_url, duration_seconds, file_size_mb, content_hash,
-                    transcript, language, transcription_date, transcript_method, transcription_status,
-                    vectorization_status, segments, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    transcript, language, transcription_date, transcription_model, extraction_hardware,
+                    extraction_status, vectorization_status, segments, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (next_id,) + values)
             
             return next_id
@@ -621,6 +659,9 @@ class relationalDB:
         
         for field, value in update_data.items():
             if field not in ['id', 'created_at', 'updated_at']:
+                # Strip NUL characters from string values (PostgreSQL rejects them)
+                if isinstance(value, str):
+                    value = value.replace('\x00', '')
                 set_clauses.append(f"{field} = ?")
                 values.append(value)
         
@@ -659,11 +700,15 @@ class relationalDB:
         Returns the new row ID.
         """
         timeline = getattr(signal, 'timeline', None)
+        context_window = getattr(signal, 'context_window', None)
+        enriched_text = getattr(signal, 'enriched_text', None)
+        enrichment_version = getattr(signal, 'enrichment_version', None)
         values = (
             signal.signal_type, signal.entity, signal.description,
             signal.industry, getattr(signal, 'impact_level', None),
             signal.confidence, timeline, signal.metadata_json,
             signal.source_content_id,
+            context_window, enriched_text, enrichment_version,
         )
 
         if self.backend == 'postgres':
@@ -673,8 +718,9 @@ class relationalDB:
                     INSERT INTO signals (
                         signal_type, entity, description, industry,
                         impact_level, confidence, timeline,
-                        metadata_json, source_content_id
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        metadata_json, source_content_id,
+                        context_window, enriched_text, enrichment_version
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 ''', values)
                 result = cursor.fetchone()
@@ -687,8 +733,9 @@ class relationalDB:
                 INSERT INTO signals (
                     id, signal_type, entity, description, industry,
                     impact_level, confidence, timeline,
-                    metadata_json, source_content_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, source_content_id,
+                    context_window, enriched_text, enrichment_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (next_id,) + values)
             return next_id
 
@@ -727,10 +774,12 @@ class relationalDB:
                         id, title, content_type, source_type, source_name,
                         pub_date, file_path, audio_url, duration_seconds,
                         file_size_mb, content_hash, transcript, language,
-                        transcription_date, transcript_method,
-                        transcription_status, vectorization_status,
+                        transcription_date, transcription_model, extraction_hardware,
+                        extraction_status, vectorization_status,
+                        screening_status, screening_reason, screened_at,
+                        signal_processed, marked_for_deletion,
                         created_at, updated_at, segments, metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET
                         title = excluded.title,
                         content_type = excluded.content_type,
@@ -745,9 +794,15 @@ class relationalDB:
                         transcript = excluded.transcript,
                         language = excluded.language,
                         transcription_date = excluded.transcription_date,
-                        transcript_method = excluded.transcript_method,
-                        transcription_status = excluded.transcription_status,
+                        transcription_model = excluded.transcription_model,
+                        extraction_hardware = excluded.extraction_hardware,
+                        extraction_status = excluded.extraction_status,
                         vectorization_status = excluded.vectorization_status,
+                        screening_status = excluded.screening_status,
+                        screening_reason = excluded.screening_reason,
+                        screened_at = excluded.screened_at,
+                        signal_processed = excluded.signal_processed,
+                        marked_for_deletion = excluded.marked_for_deletion,
                         updated_at = excluded.updated_at,
                         segments = excluded.segments,
                         metadata_json = excluded.metadata_json
@@ -757,8 +812,12 @@ class relationalDB:
                     record.get('source_name'), record.get('pub_date'), record.get('file_path'),
                     record.get('audio_url'), record.get('duration_seconds'), record.get('file_size_mb'),
                     record.get('content_hash'), record.get('transcript'), record.get('language'),
-                    record.get('transcription_date'), record.get('transcript_method'),
-                    record.get('transcription_status'), record.get('vectorization_status'),
+                    record.get('transcription_date'), record.get('transcription_model'),
+                    record.get('extraction_hardware'),
+                    record.get('extraction_status'), record.get('vectorization_status'),
+                    record.get('screening_status'), record.get('screening_reason'),
+                    record.get('screened_at'),
+                    record.get('signal_processed', False), record.get('marked_for_deletion', False),
                     record.get('created_at'), record.get('updated_at'),
                     record.get('segments'), record.get('metadata_json')
                 ))
@@ -794,8 +853,9 @@ class relationalDB:
                     INSERT INTO signals (
                         id, signal_type, entity, description, industry,
                         impact_level, confidence, timeline,
-                        metadata_json, source_content_id, extracted_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metadata_json, source_content_id, extracted_at,
+                        context_window, enriched_text, enrichment_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET
                         signal_type = excluded.signal_type,
                         entity = excluded.entity,
@@ -805,14 +865,19 @@ class relationalDB:
                         confidence = excluded.confidence,
                         timeline = excluded.timeline,
                         metadata_json = excluded.metadata_json,
-                        source_content_id = excluded.source_content_id
+                        source_content_id = excluded.source_content_id,
+                        context_window = excluded.context_window,
+                        enriched_text = excluded.enriched_text,
+                        enrichment_version = excluded.enrichment_version
                 """, (
                     rid,
                     record.get('signal_type'), record.get('entity'),
                     record.get('description'), record.get('industry'),
                     record.get('impact_level'), record.get('confidence'),
                     record.get('timeline'), record.get('metadata_json'),
-                    record.get('source_content_id'), record.get('extracted_at')
+                    record.get('source_content_id'), record.get('extracted_at'),
+                    record.get('context_window'), record.get('enriched_text'),
+                    record.get('enrichment_version')
                 ))
                 if rid in existing:
                     updated += 1
@@ -820,6 +885,57 @@ class relationalDB:
                     inserted += 1
             except Exception as e:
                 logger.error(f"Upsert error for signal {rid}: {e}")
+
+        return {"inserted": inserted, "updated": updated, "skipped": skipped}
+
+    def upsert_logs(self, records: list) -> dict:
+        """Bulk upsert system_logs records by id."""
+        inserted = 0
+        updated = 0
+        skipped = 0
+
+        if not records:
+            return {"inserted": 0, "updated": 0, "skipped": 0}
+
+        ids = [r['id'] for r in records if r.get('id') is not None]
+        existing = set()
+        if ids:
+            placeholders = ', '.join(['?' for _ in ids])
+            rows = self.query(f"SELECT id FROM system_logs WHERE id IN ({placeholders})", ids)
+            existing = {row['id'] for row in rows}
+
+        for record in records:
+            rid = record.get('id')
+            try:
+                self.execute("""
+                    INSERT INTO system_logs (
+                        id, timestamp, level, source, action, message,
+                        details_json, content_id, duration_sec, run_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (id) DO UPDATE SET
+                        timestamp = excluded.timestamp,
+                        level = excluded.level,
+                        source = excluded.source,
+                        action = excluded.action,
+                        message = excluded.message,
+                        details_json = excluded.details_json,
+                        content_id = excluded.content_id,
+                        duration_sec = excluded.duration_sec,
+                        run_id = excluded.run_id
+                """, (
+                    rid,
+                    record.get('timestamp'), record.get('level'),
+                    record.get('source'), record.get('action'),
+                    record.get('message'), record.get('details_json'),
+                    record.get('content_id'), record.get('duration_sec'),
+                    record.get('run_id')
+                ))
+                if rid in existing:
+                    updated += 1
+                else:
+                    inserted += 1
+            except Exception as e:
+                logger.error(f"Upsert error for log {rid}: {e}")
 
         return {"inserted": inserted, "updated": updated, "skipped": skipped}
 

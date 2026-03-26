@@ -1,38 +1,100 @@
 import os
 import requests
 import json
+import time
+import logging
+import traceback
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+BASE_BACKOFF = 2  # seconds
+
+
+def _classify_error(e: Exception) -> str:
+    """Classify an exception into a category for structured logging."""
+    msg = str(e).lower()
+    etype = type(e).__name__
+
+    if isinstance(e, requests.exceptions.Timeout):
+        return 'timeout'
+    if isinstance(e, requests.exceptions.ConnectionError):
+        return 'connection_error'
+    if isinstance(e, requests.exceptions.HTTPError):
+        code = getattr(e.response, 'status_code', 0) if hasattr(e, 'response') else 0
+        if code == 429:
+            return 'rate_limit'
+        if code >= 500:
+            return 'server_error'
+        return f'http_{code}'
+    if 'rate' in msg and 'limit' in msg:
+        return 'rate_limit'
+    if 'quota' in msg:
+        return 'quota_exceeded'
+    if 'timeout' in msg:
+        return 'timeout'
+    if 'resource' in msg and 'exhausted' in msg:
+        return 'quota_exceeded'
+    if 'json' in msg or 'parse' in msg or 'decode' in msg:
+        return 'parse_error'
+    if 'safety' in msg or 'blocked' in msg:
+        return 'safety_filter'
+    return etype
+
 
 class OllamaClient:
     def __init__(self, model="llama3:latest", base_url="http://localhost:11434"):
         self.model = model
+        self.model_name = model
         self.base_url = base_url
     
     def generate(self, prompt, system_prompt, temperature=0.7):
         full_prompt = f"{system_prompt}\n\n{prompt}"
-        
-        response = requests.post(
-            f"{self.base_url}/api/generate",
-            json={
-                "model": self.model,
-                "prompt": full_prompt,
-                "temperature": temperature,
-                "stream": False
-            }
-        )
-        
-        response.raise_for_status()
-        result = response.json()
-        
-        # Handle different response formats
-        if "response" in result:
-            return result["response"]
-        elif "error" in result:
-            raise RuntimeError(f"Ollama error: {result['error']}")
-        else:
-            # Unexpected format - show what we got
-            import json
-            raise KeyError(f"Unexpected Ollama response format. Got: {json.dumps(result, indent=2)}")
+        last_error = None
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = requests.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": full_prompt,
+                        "temperature": temperature,
+                        "stream": False
+                    },
+                    timeout=120,
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                if "response" in result:
+                    return result["response"]
+                elif "error" in result:
+                    raise RuntimeError(f"Ollama error: {result['error']}")
+                else:
+                    raise KeyError(f"Unexpected Ollama response format. Got: {json.dumps(result, indent=2)}")
+
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError) as e:
+                last_error = e
+                wait = BASE_BACKOFF ** attempt
+                logger.warning(f"Ollama attempt {attempt}/{MAX_RETRIES} failed ({_classify_error(e)}), retrying in {wait}s")
+                time.sleep(wait)
+            except requests.exceptions.HTTPError as e:
+                error_cat = _classify_error(e)
+                if error_cat == 'rate_limit' and attempt < MAX_RETRIES:
+                    wait = BASE_BACKOFF ** attempt * 2
+                    logger.warning(f"Ollama rate limited, waiting {wait}s")
+                    time.sleep(wait)
+                    last_error = e
+                else:
+                    raise
+            except Exception:
+                raise
+
+        raise last_error or RuntimeError(f"Ollama failed after {MAX_RETRIES} attempts")
+
 
 class GeminiClient:
     def __init__(self, model="gemini-2.5-flash"):
@@ -47,15 +109,46 @@ class GeminiClient:
 
     def generate(self, prompt, system_prompt, temperature=0.7):
         full_prompt = f"{system_prompt}\n\n{prompt}"
-        response = self._client.models.generate_content(
-            model=self.model_name,
-            contents=full_prompt,
-            config=self._types.GenerateContentConfig(
-                temperature=temperature,
-                max_output_tokens=8192,
-            )
-        )
-        return response.text
+        last_error = None
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = self._client.models.generate_content(
+                    model=self.model_name,
+                    contents=full_prompt,
+                    config=self._types.GenerateContentConfig(
+                        temperature=temperature,
+                        max_output_tokens=8192,
+                    )
+                )
+                if response.text is None:
+                    # Safety filter or empty response
+                    candidates = getattr(response, 'candidates', [])
+                    reason = 'unknown'
+                    if candidates:
+                        reason = getattr(candidates[0], 'finish_reason', 'unknown')
+                    raise RuntimeError(f"Gemini returned empty response (finish_reason={reason})")
+                return response.text
+
+            except Exception as e:
+                error_cat = _classify_error(e)
+                last_error = e
+
+                if error_cat in ('rate_limit', 'quota_exceeded', 'timeout', 'server_error', 'connection_error'):
+                    wait = BASE_BACKOFF ** attempt * (3 if error_cat == 'rate_limit' else 1)
+                    logger.warning(f"Gemini attempt {attempt}/{MAX_RETRIES} failed ({error_cat}), retrying in {wait}s")
+                    time.sleep(wait)
+                elif error_cat == 'safety_filter':
+                    # Don't retry safety blocks — they'll keep failing
+                    raise
+                elif attempt < MAX_RETRIES:
+                    wait = BASE_BACKOFF ** attempt
+                    logger.warning(f"Gemini attempt {attempt}/{MAX_RETRIES} failed ({error_cat}: {e}), retrying in {wait}s")
+                    time.sleep(wait)
+                else:
+                    raise
+
+        raise last_error or RuntimeError(f"Gemini failed after {MAX_RETRIES} attempts")
 
 class LLMClient:
     def __init__(self, vector_db, relational_db, llm_client):

@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 # Paths
 
-DB_SYNC_META = os.getenv("DB_SYNC_META")
-VDB_SYNC_META = os.getenv("VDB_SYNC_META")
+DB_SYNC_META = os.getenv("DB_SYNC_META", "sync_metadata/db_sync_metadata.json")
+VDB_SYNC_META = os.getenv("VDB_SYNC_META", "sync_metadata/vdb_sync_metadata.json")
 
 JETSON_URL = os.getenv('JETSON_URL')
 JETSON_IP = os.getenv('JETSON_IP')
@@ -24,23 +24,40 @@ JETSON_USER = os.getenv('JETSON_USER')
 
 JETSON_PROJECT_DIR = os.getenv("JETSON_PROJECT_DIR")
 
-DB_KEY = os.getenv("REL_DB_PATH")
-VECTOR_KEY = os.getenv("VECTOR_DB_PATH")
+REL_DB_PATH = os.getenv("REL_DB_PATH", "Database/industry_signals.db")
+VECTOR_KEY = os.getenv("VECTOR_DB_PATH", "Vectors")
+SYNC_LIMIT = int(os.getenv("SYNC_LIMIT", "1000"))
+SYNC_VECTORS = os.getenv("SYNC_VECTORS", "false").strip().lower() in ("1", "true", "yes", "y")
 
 
 def load_sync_metadata(meta_path):
     """Load sync metadata JSON, return dict."""
+    if not meta_path:
+        return {"instances": {}}
     if not os.path.exists(meta_path):
         return {"instances": {}}
-    with open(meta_path, 'r') as f:
-        return json.load(f)
+    try:
+        with open(meta_path, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {"instances": {}}
 
 
 def save_sync_metadata(meta_path, metadata):
     """Save sync metadata JSON."""
+    if not meta_path:
+        return
+    meta_dir = os.path.dirname(meta_path)
+    if meta_dir and not os.path.exists(meta_dir):
+        os.makedirs(meta_dir, exist_ok=True)
     with open(meta_path, 'w') as f:
         json.dump(metadata, f, indent=4)
     logger.info(f"Updated sync metadata: {meta_path}")
+
+
+def _max_timestamp(records, field):
+    values = [r.get(field) for r in records if r.get(field)]
+    return max(values) if values else None
 
 
 def check_jetson_health():
@@ -68,57 +85,68 @@ def sync_relational_db():
     Uses the last_synced timestamp from sync_metadata.json to do incremental sync.
     """
     meta = load_sync_metadata(DB_SYNC_META)
-    DB_KEY = "Database/industry_signals.db"
+    db_instance_key = REL_DB_PATH
 
-    if DB_KEY not in meta.get("instances", {}):
-        meta.setdefault("instances", {})[DB_KEY] = {
+    if db_instance_key not in meta.get("instances", {}):
+        meta.setdefault("instances", {})[db_instance_key] = {
             "last_updated": None,
             "last_synced": None,
             "sync_status": "initialized"
         }
 
-    instance = meta["instances"][DB_KEY]
-    last_synced = instance.get("last_synced")
-
-    # If never synced, use epoch
-    if not last_synced:
-        last_synced = "2000-01-01T00:00:00Z"
+    instance = meta["instances"][db_instance_key]
+    last_synced = instance.get("last_synced") or "2000-01-01T00:00:00Z"
 
     logger.info(f"Syncing relational DB since: {last_synced}")
 
     try:
-        resp = requests.get(
-            f"{JETSON_URL}/api/content/sync",
-            params={"since": last_synced, "limit": 1000},
-            timeout=30
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        local_db = relationalDB(REL_DB_PATH)
+        since_cursor = last_synced
+        total_count = 0
+        page = 0
 
-        count = data.get("count", 0)
-        has_more = data.get("has_more", False)
-        records = data.get("data", [])
+        while True:
+            resp = requests.get(
+                f"{JETSON_URL}/api/content/sync",
+                params={"since": since_cursor, "limit": SYNC_LIMIT},
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-        logger.info(f"Received {count} records from Jetson (has_more={has_more})")
+            count = data.get("count", 0)
+            has_more = data.get("has_more", False)
+            records = data.get("data", [])
+            page += 1
 
-        if records:
-            local_db = relationalDB(DB_KEY)
+            logger.info(f"Page {page}: received {count} content records (has_more={has_more})")
+
+            if not records:
+                break
+
             result = local_db.upsert_records(records)
-            logger.info(f"  Upsert result: {result['inserted']} inserted, {result['updated']} updated, {result['skipped']} skipped")
+            logger.info(
+                f"  Upsert result: {result['inserted']} inserted, {result['updated']} updated, {result['skipped']} skipped"
+            )
+            total_count += count
 
-        # Update sync metadata
+            max_updated = _max_timestamp(records, "updated_at")
+            if not max_updated or max_updated <= since_cursor:
+                logger.warning("Content sync cursor did not advance; stopping to avoid infinite loop.")
+                break
+
+            since_cursor = max_updated
+            if not has_more:
+                break
+
         now = datetime.now(timezone.utc).isoformat()
-        instance["last_synced"] = now
+        instance["last_synced"] = since_cursor
         instance["last_updated"] = now
         instance["sync_status"] = "synced"
-        instance["last_record_count"] = count
+        instance["last_record_count"] = total_count
 
         save_sync_metadata(DB_SYNC_META, meta)
-
-        if has_more:
-            logger.warning("More records available. Run sync again to continue.")
-
-        return count
+        return total_count
 
     except requests.HTTPError as e:
         logger.error(f"API error during DB sync: {e}")
@@ -138,7 +166,7 @@ def sync_signals_db():
     Uses the last_synced timestamp from sync_metadata.json to do incremental sync.
     """
     meta = load_sync_metadata(DB_SYNC_META)
-    SIGNALS_KEY = "Database/signals"
+    SIGNALS_KEY = f"signals::{REL_DB_PATH}"
 
     if SIGNALS_KEY not in meta.get("instances", {}):
         meta.setdefault("instances", {})[SIGNALS_KEY] = {
@@ -153,37 +181,53 @@ def sync_signals_db():
     logger.info(f"Syncing signals since: {last_synced}")
 
     try:
-        resp = requests.get(
-            f"{JETSON_URL}/api/signals/sync",
-            params={"since": last_synced, "limit": 1000},
-            timeout=30
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        local_db = relationalDB(REL_DB_PATH)
+        since_cursor = last_synced
+        total_count = 0
+        page = 0
 
-        count = data.get("count", 0)
-        has_more = data.get("has_more", False)
-        records = data.get("data", [])
+        while True:
+            resp = requests.get(
+                f"{JETSON_URL}/api/signals/sync",
+                params={"since": since_cursor, "limit": SYNC_LIMIT},
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-        logger.info(f"Received {count} signals from Jetson (has_more={has_more})")
+            count = data.get("count", 0)
+            has_more = data.get("has_more", False)
+            records = data.get("data", [])
+            page += 1
 
-        if records:
-            local_db = relationalDB(DB_KEY)
+            logger.info(f"Page {page}: received {count} signals (has_more={has_more})")
+
+            if not records:
+                break
+
             result = local_db.upsert_signals(records)
-            logger.info(f"  Upsert result: {result['inserted']} inserted, {result['updated']} updated, {result['skipped']} skipped")
+            logger.info(
+                f"  Upsert result: {result['inserted']} inserted, {result['updated']} updated, {result['skipped']} skipped"
+            )
+            total_count += count
+
+            max_extracted = _max_timestamp(records, "extracted_at")
+            if not max_extracted or max_extracted <= since_cursor:
+                logger.warning("Signal sync cursor did not advance; stopping to avoid infinite loop.")
+                break
+
+            since_cursor = max_extracted
+            if not has_more:
+                break
 
         now = datetime.now(timezone.utc).isoformat()
-        instance["last_synced"] = now
+        instance["last_synced"] = since_cursor
         instance["last_updated"] = now
         instance["sync_status"] = "synced"
-        instance["last_record_count"] = count
+        instance["last_record_count"] = total_count
 
         save_sync_metadata(DB_SYNC_META, meta)
-
-        if has_more:
-            logger.warning("More signals available. Run sync again to continue.")
-
-        return count
+        return total_count
 
     except requests.HTTPError as e:
         logger.error(f"API error during signals sync: {e}")
@@ -192,6 +236,87 @@ def sync_signals_db():
         return 0
     except Exception as e:
         logger.error(f"Signals sync failed: {e}")
+        instance["sync_status"] = "error"
+        save_sync_metadata(DB_SYNC_META, meta)
+        return 0
+
+
+def sync_logs_db():
+    """
+    Pull new/updated system logs from Jetson via /api/logs/sync endpoint.
+    Uses the last_synced timestamp from sync_metadata.json to do incremental sync.
+    """
+    meta = load_sync_metadata(DB_SYNC_META)
+    LOGS_KEY = f"logs::{REL_DB_PATH}"
+
+    if LOGS_KEY not in meta.get("instances", {}):
+        meta.setdefault("instances", {})[LOGS_KEY] = {
+            "last_updated": None,
+            "last_synced": None,
+            "sync_status": "initialized"
+        }
+
+    instance = meta["instances"][LOGS_KEY]
+    last_synced = instance.get("last_synced") or "2000-01-01T00:00:00Z"
+
+    logger.info(f"Syncing system logs since: {last_synced}")
+
+    try:
+        local_db = relationalDB(REL_DB_PATH)
+        since_cursor = last_synced
+        total_count = 0
+        page = 0
+
+        while True:
+            resp = requests.get(
+                f"{JETSON_URL}/api/logs/sync",
+                params={"since": since_cursor, "limit": SYNC_LIMIT},
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            count = data.get("count", 0)
+            has_more = data.get("has_more", False)
+            records = data.get("data", [])
+            page += 1
+
+            logger.info(f"Page {page}: received {count} log entries (has_more={has_more})")
+
+            if not records:
+                break
+
+            result = local_db.upsert_logs(records)
+            logger.info(
+                f"  Upsert result: {result['inserted']} inserted, {result['updated']} updated, {result['skipped']} skipped"
+            )
+            total_count += count
+
+            max_timestamp = _max_timestamp(records, "timestamp")
+            if not max_timestamp or max_timestamp <= since_cursor:
+                logger.warning("Logs sync cursor did not advance; stopping to avoid infinite loop.")
+                break
+
+            since_cursor = max_timestamp
+            if not has_more:
+                break
+
+        now = datetime.now(timezone.utc).isoformat()
+        instance["last_synced"] = since_cursor
+        instance["last_updated"] = now
+        instance["sync_status"] = "synced"
+        instance["last_record_count"] = total_count
+
+        save_sync_metadata(DB_SYNC_META, meta)
+        return total_count
+
+    except requests.HTTPError as e:
+        logger.error(f"API error during logs sync: {e}")
+        instance["sync_status"] = "error"
+        save_sync_metadata(DB_SYNC_META, meta)
+        return 0
+    except Exception as e:
+        logger.error(f"Logs sync failed: {e}")
         instance["sync_status"] = "error"
         save_sync_metadata(DB_SYNC_META, meta)
         return 0
@@ -291,8 +416,8 @@ def sync_vector_db():
     return success_count
 
 
-def full_sync():
-    """Run full sync: health check -> relational DB -> vector DB."""
+def full_sync(include_vectors: bool = SYNC_VECTORS):
+    """Run sync: health check -> relational DB -> signals (and optional vectors)."""
     logger.info("=" * 50)
     logger.info("Starting full sync from Jetson")
     logger.info(f"Jetson URL: {JETSON_URL}")
@@ -314,16 +439,25 @@ def full_sync():
     signals_count = sync_signals_db()
     logger.info(f"Signals: {signals_count} records synced")
 
-    # 4. Sync vector DB via SCP (content + signal vectors)
-    logger.info("\n--- Syncing Vector DB (SCP) ---")
-    vdb_count = sync_vector_db()
-    logger.info(f"Vector DB: {vdb_count}/4 files synced")
+    # 4. Sync system logs via API
+    logger.info("\n--- Syncing System Logs (API) ---")
+    logs_count = sync_logs_db()
+    logger.info(f"System Logs: {logs_count} entries synced")
+
+    vdb_count = 0
+    if include_vectors:
+        logger.info("\n--- Syncing Vector DB (SCP) ---")
+        vdb_count = sync_vector_db()
+        logger.info(f"Vector DB: {vdb_count}/4 files synced")
+    else:
+        logger.info("\n--- Skipping Vector DB sync (SYNC_VECTORS=false) ---")
 
     # Summary
     logger.info("\n" + "=" * 50)
     logger.info("Sync complete!")
     logger.info(f"  Content records:  {db_count}")
     logger.info(f"  Signal records:   {signals_count}")
+    logger.info(f"  Log entries:      {logs_count}")
     logger.info(f"  VDB files:        {vdb_count}/4 (2 corpus + 2 signal)")
     logger.info("=" * 50)
 
@@ -333,3 +467,6 @@ def full_sync():
 if __name__ == "__main__":
     #print(load_sync_metadata(DB_SYNC_META))
     full_sync()
+    
+# To reset sync date to yesterday (for full refresh):
+# python -c "import json; from datetime import datetime, timedelta; yesterday = (datetime.now() - timedelta(days=1)).isoformat() + 'Z'; meta = {'instances': {'Database/industry_signals.db': {'last_synced': yesterday, 'sync_status': 'synced'}, 'signals::Database/industry_signals.db': {'last_synced': yesterday, 'sync_status': 'synced'}, 'logs::Database/industry_signals.db': {'last_synced': yesterday, 'sync_status': 'synced'}}}; json.dump(meta, open('sync_metadata/db_sync_metadata.json', 'w'), indent=4)"

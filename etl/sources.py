@@ -92,9 +92,10 @@ class ContentSources:
                         content_data = {
                             'title': metadata.get('episode_title', ep.title),
                             'content_type': 'audio',
-                            'source_type': 'audio',
+                            'source_type': 'podcast',
                             'source_name': podcast_name,
                             'file_path': filepath,
+                            'audio_url': audio_url,
                             'transcript': '',
                             'pub_date': metadata.get('pub_date', ''),
                             'duration_seconds': metadata.get('duration'),
@@ -260,9 +261,10 @@ class ContentSources:
                 content_data = {
                     'title': metadata.get('episode_title', entry.title),
                     'content_type': 'audio',
-                    'source_type': 'audio',
+                    'source_type': 'podcast',
                     'source_name': podcast_name,
                     'file_path': filepath,
+                    'audio_url': audio_url,
                     'transcript': '',
                     'pub_date': metadata.get('pub_date', ''),
                     'duration_seconds': metadata.get('duration'),
@@ -471,12 +473,20 @@ class ContentSources:
 
             # Write to DB (source of truth)
             if self.db:
+                # Map detected content_type to general category
+                GENERAL_TYPE_MAP = {
+                    'pdf': 'text', 'html': 'html', 'text': 'text',
+                    'markdown': 'text', 'xml': 'text',
+                    'audio': 'audio', 'video': 'video', 'unknown': 'text',
+                }
+                general_ctype = GENERAL_TYPE_MAP.get(content_type, 'text')
                 content_data = {
                     'title': title,
-                    'content_type': content_type,
-                    'source_type': content_type,
+                    'content_type': general_ctype,
+                    'source_type': content_type,  # specific: pdf, html, text, etc.
                     'source_name': publisher or 'Unknown',
                     'file_path': filepath,
+                    'audio_url': 'N/A',
                     'transcript': '',
                     'pub_date': (extra_metadata or {}).get('pub_date', ''),
                     'duration_seconds': None,
@@ -597,7 +607,7 @@ class ContentSources:
             rows = self.db.query("""
                 SELECT id, title, file_path, source_name, content_type
                 FROM content
-                WHERE transcription_status = 'pending'
+                WHERE extraction_status = 'pending'
                 AND content_type = 'audio'
                 ORDER BY created_at ASC
             """)
@@ -622,7 +632,7 @@ class ContentSources:
             rows = self.db.query("SELECT id FROM content WHERE file_path = ?", [filepath])
             if rows:
                 self.db.update_record(rows[0]['id'], {
-                    'transcription_status': 'completed'
+                    'extraction_status': 'completed'
                 })
             return
         

@@ -27,10 +27,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = os.getenv("JETSON_DB_PATH")
-VECTOR_PATH = os.getenv("JETSON_VECTOR_PATH", "/mnt/nvme/vectors/")
-CORPUS_VECTOR_PATH = os.path.join(VECTOR_PATH.rstrip("/"), "corpus_vectors")
-SIGNAL_VECTOR_PATH = os.path.join(VECTOR_PATH.rstrip("/"), "signal_vectors")
+# Use device config for paths
+DB_PATH = config.DB_PATH
+VECTOR_PATH = config.VECTOR_PATH
+CORPUS_VECTOR_PATH = config.CORPUS_VECTOR_PATH
+SIGNAL_VECTOR_PATH = config.SIGNAL_VECTOR_PATH
 
 
 db = relationalDB(DB_PATH)
@@ -70,6 +71,8 @@ async def root():
             "stats": "/api/stats - Content and vector database statistics", 
             "search": "/api/search - Semantic search across content library",
             "sync": "/api/content/sync - Incremental content sync",
+            "signals": "/api/signals/sync - Incremental signals sync",
+            "logs": "/api/logs/sync - Incremental system logs sync",
             "content": "/api/content/item/{id} - Get specific content item",
             "docs": "/docs - Interactive API documentation (Swagger UI)",
             "openapi": "/openapi.json - OpenAPI specification"
@@ -179,6 +182,29 @@ async def sync_signals(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error syncing signals: {str(e)}")
+
+
+@app.get("/api/logs/sync")
+async def sync_logs(
+    since: str = Query(..., description="ISO timestamp of last sync"),
+    limit: int = Query(1000, ge=1, le=5000)
+):
+    try:
+        query = """
+            SELECT * FROM system_logs 
+            WHERE timestamp > ?
+            ORDER BY timestamp ASC
+            LIMIT ?
+        """
+        data = db.query(query, (since, limit))
+        return {
+            "count": len(data),
+            "since": since,
+            "data": data,
+            "has_more": len(data) == limit
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error syncing logs: {str(e)}")
 
 
 @app.get("/api/content/item/{content_id}")

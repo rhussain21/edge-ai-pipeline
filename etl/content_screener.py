@@ -18,11 +18,13 @@ Usage:
 import json
 import logging
 import textwrap
+import traceback
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 from logging_config import syslog
+from llm_client import _classify_error
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
@@ -94,7 +96,7 @@ class ContentScreener:
             SELECT id, title, source_name, source_type, transcript
             FROM content
             WHERE (screening_status = 'pending' OR screening_status IS NULL)
-              AND vectorization_status = 'completed'
+              AND extraction_status IN ('completed', 'NA')
             ORDER BY id
             LIMIT ?
         """, [limit])
@@ -133,15 +135,37 @@ class ContentScreener:
                     f"\"{title}\" — {decision.get('reason', '')}"
                 )
             except Exception as e:
+                error_cat = _classify_error(e)
+                tb = traceback.format_exc()
+                transcript_len = len(row.get('transcript') or '')
+
                 logger.error(f"Screening failed for id={content_id}: {e}")
-                syslog.error('pipeline', 'screening', f'Screening failed: {title[:50]}',
-                             content_id=content_id, details={'error': str(e)})
+                syslog.error('pipeline', 'screening_error',
+                             f'Screening failed [{error_cat}]: {title[:50]}',
+                             content_id=content_id,
+                             details={
+                                 'error_category': error_cat,
+                                 'error_type': type(e).__name__,
+                                 'error_message': str(e)[:500],
+                                 'traceback': tb[-500:],
+                                 'content_id': content_id,
+                                 'title': title,
+                                 'source_type': row.get('source_type'),
+                                 'source_name': row.get('source_name'),
+                                 'transcript_length': transcript_len,
+                             })
+                # Mark as 'error' in DB with reason for later review
+                self.db.update_record(content_id, {
+                    'screening_status': 'error',
+                    'screening_reason': f'[{error_cat}] {str(e)[:200]}',
+                })
                 summary["errors"] += 1
                 summary["details"].append({
                     "id": content_id,
                     "title": title,
                     "decision": "error",
                     "reason": str(e),
+                    "error_category": error_cat,
                 })
 
         return summary
@@ -153,6 +177,9 @@ class ContentScreener:
         transcript = row.get("transcript") or ""
         excerpt = transcript[:MAX_EXCERPT_CHARS]
 
+        if not excerpt.strip():
+            raise ValueError("Empty transcript — nothing to screen")
+
         prompt = USER_PROMPT_TEMPLATE.format(
             title=row.get("title", "Untitled"),
             source_name=row.get("source_name", "Unknown"),
@@ -162,11 +189,14 @@ class ContentScreener:
         )
 
         raw = self.llm.generate(prompt, SYSTEM_PROMPT, temperature=0.1)
-        return self._parse_response(raw)
+        return self._parse_response(raw, content_id=row.get("id"))
 
     @staticmethod
-    def _parse_response(raw: str) -> dict:
+    def _parse_response(raw: str, content_id: int = None) -> dict:
         """Extract the JSON decision from the LLM response."""
+        if raw is None:
+            raise ValueError("LLM returned None response")
+
         text = raw.strip()
         # Strip markdown fences if present
         if text.startswith("```"):
@@ -204,10 +234,28 @@ class ContentScreener:
                     pass
         
         if parsed is None:
+            # Log the raw response for model training / debugging
+            syslog.error('pipeline', 'screening_parse_fail',
+                         f'Could not parse LLM response for content_id={content_id}',
+                         content_id=content_id,
+                         details={
+                             'error_category': 'parse_error',
+                             'raw_response': text[:500],
+                             'response_length': len(text),
+                         })
             raise ValueError(f"Could not parse LLM screening response: {text[:200]}")
 
         decision = parsed.get("decision", "").lower().strip()
         if decision not in ("approve", "reject"):
+            syslog.error('pipeline', 'screening_invalid_decision',
+                         f'LLM returned invalid decision "{decision}" for content_id={content_id}',
+                         content_id=content_id,
+                         details={
+                             'error_category': 'validation_error',
+                             'raw_decision': decision,
+                             'parsed_json': parsed,
+                             'raw_response': text[:500],
+                         })
             raise ValueError(f"Invalid decision '{decision}', expected 'approve' or 'reject'")
 
         return {
