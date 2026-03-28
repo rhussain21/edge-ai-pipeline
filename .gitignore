@@ -17,3 +17,11 @@ pdf_extraction_samples/
 test_pdf_extraction.py
 run_api.sh
 run_etl.sh
+run_ingestion.sh
+run_process.sh
+test_adapter.py
+test_pipeline.py
+workflows/backfill_status.py
+notebooks/
+dashboard_data/
+sync_metadata/

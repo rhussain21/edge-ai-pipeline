@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Media file cleanup script.
+Media Cleanup Workflow.
 
 Marks and deletes files from media/ based on content table metadata:
   - Rejected content (screening_status = 'rejected')
@@ -10,43 +10,38 @@ Marks and deletes files from media/ based on content table metadata:
 
 Usage:
     # Dry run (default) — shows what would be deleted
-    python cleanup.py
+    python workflows/cleanup.py
 
     # Mark files for deletion in DB (no files deleted yet)
-    python cleanup.py --mark
+    python workflows/cleanup.py --mark
 
     # Actually delete marked files from disk
-    python cleanup.py --delete
+    python workflows/cleanup.py --delete
 
     # Mark + delete in one step
-    python cleanup.py --mark --delete
+    python workflows/cleanup.py --mark --delete
 
     # Override age threshold (default 180 days)
-    python cleanup.py --max-age-days 90
+    python workflows/cleanup.py --max-age-days 90
 
-Designed to run standalone via cron or ad-hoc:
-    0 3 * * 0  cd /home/redwan/ai_industry_signals && python cleanup.py --mark --delete >> /var/log/cleanup.log 2>&1
+Cron (Saturday 11 PM):
+    0 23 * * 6  cd /home/redwan/ai_industry_signals && python workflows/cleanup.py --mark --delete >> /var/log/cleanup.log 2>&1
 """
 
 import argparse
 import os
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 
-# Bootstrap: load device config so env vars and DB backend are set
-try:
-    from device_config import config
-    DB_PATH = config.DB_PATH
-except ImportError:
-    DB_PATH = os.getenv('DB_PATH', 'Database/industry_signals.db')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from device_config import config
 from db_relational import relationalDB
 from logging_config import syslog
 
 
 def get_db():
-    return relationalDB(DB_PATH)
+    return relationalDB(config.DB_PATH)
 
 
 # ── Cleanup rules ────────────────────────────────────────────────────
@@ -107,7 +102,7 @@ def find_processed_audio(db) -> list:
         SELECT id, title, file_path, content_type, file_size_mb
         FROM content
         WHERE content_type = 'audio'
-          AND transcription_status = 'completed'
+          AND extraction_status = 'completed'
           AND signal_processed = TRUE
           AND marked_for_deletion = FALSE
           AND file_path IS NOT NULL
@@ -121,10 +116,9 @@ def mark_for_deletion(db, candidates: list):
     """Set marked_for_deletion = TRUE in the content table."""
     if not candidates:
         return 0
-    ids = [c['id'] for c in candidates]
     marked = 0
-    for cid in ids:
-        db.execute("UPDATE content SET marked_for_deletion = TRUE WHERE id = ?", [cid])
+    for c in candidates:
+        db.execute("UPDATE content SET marked_for_deletion = TRUE WHERE id = ?", [c['id']])
         marked += 1
     return marked
 
@@ -167,7 +161,6 @@ def delete_files(db):
 # ── Display ──────────────────────────────────────────────────────────
 
 def print_candidates(candidates: list, label: str):
-    """Pretty-print a list of cleanup candidates."""
     if not candidates:
         print(f"\n  {label}: 0 files")
         return
@@ -181,7 +174,6 @@ def print_candidates(candidates: list, label: str):
 
 
 def print_summary(all_candidates: list):
-    """Print overall summary."""
     total_files = len(all_candidates)
     total_mb = sum(c.get('file_size_mb') or 0 for c in all_candidates)
     by_reason = {}
@@ -189,9 +181,9 @@ def print_summary(all_candidates: list):
         reason = c.get('reason', 'unknown')
         by_reason.setdefault(reason, []).append(c)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"CLEANUP SUMMARY: {total_files} files, {total_mb:.1f} MB")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for reason, items in sorted(by_reason.items()):
         mb = sum(c.get('file_size_mb') or 0 for c in items)
         print(f"  {reason}: {len(items)} files ({mb:.1f} MB)")
@@ -199,29 +191,12 @@ def print_summary(all_candidates: list):
 
 # ── Main ─────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Cleanup media files based on content table metadata.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python cleanup.py                     # Dry run
-  python cleanup.py --mark              # Mark files in DB
-  python cleanup.py --mark --delete     # Mark + delete from disk
-  python cleanup.py --max-age-days 90   # Override age threshold
-        """,
-    )
-    parser.add_argument('--mark', action='store_true',
-                        help='Mark candidates for deletion in DB')
-    parser.add_argument('--delete', action='store_true',
-                        help='Delete files on disk (only those marked)')
-    parser.add_argument('--max-age-days', type=int, default=180,
-                        help='Age threshold in days (default: 180)')
-    args = parser.parse_args()
+def run_cleanup(args):
+    run_id = syslog.start_run('cleanup')
 
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"MEDIA CLEANUP  ({datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')})")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Mode: {'DRY RUN' if not args.mark else 'MARK' + (' + DELETE' if args.delete else '')}")
     print(f"Age threshold: {args.max_age_days} days")
 
@@ -240,7 +215,7 @@ Examples:
     old = find_old_content(db, max_age_days=args.max_age_days)
     audio = find_processed_audio(db)
 
-    # Deduplicate across categories (a file may match multiple rules)
+    # Deduplicate across categories
     seen_ids = set()
     all_candidates = []
     for candidate in rejected + duplicates + old + audio:
@@ -255,8 +230,11 @@ Examples:
     print_candidates(audio, "Processed audio (transcribed + signals done)")
     print_summary(all_candidates)
 
+    total_mb = sum(c.get('file_size_mb') or 0 for c in all_candidates)
+
     if not all_candidates:
         print("\nNothing to clean up.")
+        syslog.end_run('cleanup', summary='Nothing to clean up')
         return
 
     # ── Mark ──
@@ -283,6 +261,36 @@ Examples:
             syslog.warning('cleanup', 'delete', f'{errors} files failed to delete')
     elif args.mark:
         print("Files marked but NOT deleted. Run with --mark --delete to remove from disk.")
+
+    syslog.end_run('cleanup',
+                   summary=f'{len(all_candidates)} candidates, {total_mb:.1f} MB')
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Media file cleanup workflow.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument('--mark', action='store_true',
+                        help='Mark candidates for deletion in DB')
+    parser.add_argument('--delete', action='store_true',
+                        help='Delete files on disk (only those marked)')
+    parser.add_argument('--max-age-days', type=int, default=180,
+                        help='Age threshold in days (default: 180)')
+    args = parser.parse_args()
+
+    try:
+        run_cleanup(args)
+    except KeyboardInterrupt:
+        print("\nCleanup interrupted.")
+        syslog.warning('cleanup', 'interrupted', 'Cleanup interrupted by user')
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nCleanup failed: {e}")
+        syslog.error('cleanup', 'failed', str(e))
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

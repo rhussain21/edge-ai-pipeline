@@ -40,12 +40,12 @@ class relationalDB:
             'host': os.getenv('PG_HOST', 'localhost'),
             'port': os.getenv('PG_PORT', '5432'),
             'database': os.getenv('PG_DB', 'industry_signals'),
-            'user': os.getenv('PG_USER', 'redwan'),
+            'user': os.getenv('PG_USER', os.getenv('USER', 'postgres')),
             'password': os.getenv('PG_PASSWORD', ''),
         }
-        self.db_path = f"postgresql://{config['host']}:{config['port']}/{config['database']}"
         self.con = psycopg2.connect(**config)
         self.con.autocommit = True
+        self.db_path = f"postgresql://{config['host']}:{config['port']}/{config['database']}"
         logger.info(f"Connected to PostgreSQL: {self.db_path}")
         print(f"Backend: PostgreSQL ({self.db_path})")
     
