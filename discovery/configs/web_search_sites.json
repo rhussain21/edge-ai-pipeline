@@ -1,0 +1,64 @@
+{
+  "site_searches": [
+    {
+      "domain": "automationworld.com",
+      "label": "Automation World",
+      "category": "trade_publication"
+    },
+    {
+      "domain": "controleng.com",
+      "label": "Control Engineering",
+      "category": "trade_publication"
+    },
+    {
+      "domain": "www.industryweek.com",
+      "label": "IndustryWeek",
+      "category": "trade_publication"
+    },
+    {
+      "domain": "www.plantengineering.com",
+      "label": "Plant Engineering",
+      "category": "trade_publication"
+    },
+    {
+      "domain": "www.manufacturingnet.com",
+      "label": "Manufacturing.net",
+      "category": "trade_publication"
+    },
+    {
+      "domain": "spectrum.ieee.org",
+      "label": "IEEE Spectrum",
+      "category": "trade_publication"
+    },
+    {
+      "domain": "mckinsey.com/industries/advanced-electronics/our-insights",
+      "label": "McKinsey Manufacturing",
+      "category": "consulting"
+    },
+    {
+      "domain": "www2.deloitte.com/us/en/insights/industry/manufacturing",
+      "label": "Deloitte Manufacturing",
+      "category": "consulting"
+    },
+    {
+      "domain": "www.bcg.com/publications",
+      "label": "BCG Perspectives",
+      "category": "consulting"
+    },
+    {
+      "domain": "stackoverflow.com/questions/tagged",
+      "label": "Stack Overflow (automation tags)",
+      "category": "community"
+    },
+    {
+      "domain": "www.reddit.com/r/PLC",
+      "label": "Reddit r/PLC",
+      "category": "community"
+    },
+    {
+      "domain": "www.reddit.com/r/automation",
+      "label": "Reddit r/automation",
+      "category": "community"
+    }
+  ]
+}

@@ -48,7 +48,8 @@ def detect_device() -> str:
 
 _DEFAULTS = {
     'jetson': {
-        'DB_PATH':       '/mnt/nvme/db/industry_signals.db',
+        'DB_PATH':       '/mnt/nvme/db/industry_signals_test.db',
+        'DB_PATH_ANALYTICS': '/mnt/nvme/db/industry_signals.db',
         'DB_BACKEND':    'postgres',
         'MEDIA_DIR':     '/mnt/nvme/media/',
         'VECTOR_PATH':   '/mnt/nvme/vectors/',
@@ -57,16 +58,19 @@ _DEFAULTS = {
         'LLM_PROVIDER':  'ollama',
     },
     'mac': {
-        'DB_PATH':       'Database/industry_signals.db',
+        'DB_PATH':       'Database/industry_signals_test.db',
+        'DB_PATH_ANALYTICS': 'Database/industry_signals.db',
         'DB_BACKEND':    'duckdb',
         'MEDIA_DIR':     'media/',
         'VECTOR_PATH':   'Vectors/',
+        'LANCE_VECTOR_PATH': 'Vectors/lance',
         'LLM_MODEL':     'gemini-2.5-flash',
         'LLM_URL':       None,
         'LLM_PROVIDER':  'gemini',
     },
     'linux': {
-        'DB_PATH':       'Database/industry_signals.db',
+        'DB_PATH':       'Database/industry_signals_test.db',
+        'DB_PATH_ANALYTICS': 'Database/industry_signals.db',
         'DB_BACKEND':    'duckdb',
         'MEDIA_DIR':     'media/',
         'VECTOR_PATH':   'Vectors/',
@@ -87,6 +91,7 @@ class DeviceConfig:
 
         # Each value: env var override → platform default
         self.DB_PATH      = os.getenv('DB_PATH',      os.getenv('JETSON_DB_PATH', defaults['DB_PATH']))
+        self.DB_PATH_ANALYTICS = os.getenv('DB_PATH_ANALYTICS', defaults['DB_PATH_ANALYTICS'])
         self.DB_BACKEND   = os.getenv('DB_BACKEND',    defaults['DB_BACKEND'])
         self.MEDIA_DIR    = os.getenv('MEDIA_DIR',     defaults['MEDIA_DIR'])
         self.VECTOR_PATH  = os.getenv('VECTOR_PATH',   os.getenv('JETSON_VECTOR_PATH',
@@ -98,6 +103,14 @@ class DeviceConfig:
         # Derived paths
         self.CORPUS_VECTOR_PATH = os.path.join(self.VECTOR_PATH.rstrip('/'), 'corpus_vectors')
         self.SIGNAL_VECTOR_PATH = os.path.join(self.VECTOR_PATH.rstrip('/'), 'signal_vectors')
+
+        # LanceDB — Mac-only (testing / AnythingLLM integration)
+        if self.DEVICE == 'mac':
+            self.LANCE_VECTOR_PATH = os.getenv(
+                'LANCE_VECTOR_PATH', defaults.get('LANCE_VECTOR_PATH', 'Vectors/lance')
+            )
+        else:
+            self.LANCE_VECTOR_PATH = None
 
         self._print_banner()
 
@@ -122,6 +135,8 @@ class DeviceConfig:
         print(f"│ DB:       {self.DB_BACKEND} → {self.DB_PATH}")
         print(f"│ Media:    {self.MEDIA_DIR}")
         print(f"│ Vectors:  {self.VECTOR_PATH}")
+        if self.LANCE_VECTOR_PATH:
+            print(f"│ Lance:    {self.LANCE_VECTOR_PATH}")
         print(f"│ LLM:      {self.LLM_PROVIDER}/{self.LLM_MODEL}")
         print(f"└──────────────────────────────────────────")
 

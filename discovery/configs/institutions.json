@@ -1,0 +1,31 @@
+{
+  "institutions": {
+    "nist": {
+      "name": "National Institute of Standards and Technology",
+      "programs": [
+        "Cybersecurity Framework",
+        "Manufacturing Extension Partnership",
+        "Smart Manufacturing",
+        "Industrial Control Systems Security",
+        "Advanced Manufacturing"
+      ],
+      "search_templates": [
+        "NIST {topic} manufacturing",
+        "NIST {standard} guidance",
+        "NIST cybersecurity industrial control"
+      ]
+    },
+    "nsf": {
+      "name": "National Science Foundation",
+      "directorates": [
+        "Engineering",
+        "Computer and Information Science and Engineering"
+      ],
+      "search_templates": [
+        "{topic} manufacturing automation",
+        "{topic} industrial robotics",
+        "smart manufacturing cyber-physical systems"
+      ]
+    }
+  }
+}

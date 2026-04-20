@@ -8,14 +8,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from device_config import config
 VECTOR_PATH = os.getenv("VECTOR_PATH", os.getenv("JETSON_VECTOR_PATH", os.getenv("VECTOR_DB_PATH", "Vectors/")))
-import pdfplumber
-try:
-    import fitz  # PyMuPDF
-    PYMUPDF_AVAILABLE = True
-    #print("PyMuPDF available")
-except ImportError:
-    PYMUPDF_AVAILABLE = False
-    print("PyMuPDF not available")
 from bs4 import BeautifulSoup
 import docx
 import whisper
@@ -177,44 +169,17 @@ class contentETL:
     
 
     def extract_pdf_text(self, file_path):
-        """Extract text from PDF files with multiple library fallbacks.
+        """Extract text from PDF files.
+        Delegates to PDFExtractor (PyMuPDF primary, pdfplumber fallback).
         Strips NUL (0x00) characters that cause PostgreSQL insert failures."""
+        from tools.pdf_extractor import PDFExtractor
+
         print(f"Attempting PDF extraction for {file_path}")
-        
-        if PYMUPDF_AVAILABLE:
-            print("Using PyMuPDF...")
-            try:
-                doc = fitz.open(file_path)
-                text = ""
-                for page in doc:
-                    page_text = page.get_text()
-                    if page_text:
-                        text += page_text + "\n"
-                doc.close()
-                if text.strip():
-                    # Strip NUL bytes that some PDFs contain (breaks PostgreSQL)
-                    text = text.replace('\x00', '')
-                    print(f"PyMuPDF extracted {len(text)} characters")
-                    return text.strip()
-                else:
-                    print("PyMuPDF returned empty text")
-            except Exception as e:
-                print(f"PyMuPDF failed for {file_path}: {e}")
-        
-        print("Falling back to pdfplumber...")
-        try:
-            with pdfplumber.open(file_path) as pdf:
-                text = ""
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-                # Strip NUL bytes
-                text = text.replace('\x00', '')
-                return text.strip()
-        except Exception as e:
-            print(f"pdfplumber failed for {file_path}: {e}")
-        
+        text, page_count = PDFExtractor.extract_text(file_path)
+        if text and text.strip():
+            print(f"PDF extracted {len(text)} characters ({page_count} pages)")
+            return text.strip()
+
         print(f"All PDF extraction methods failed for {file_path}")
         return f"PDF extraction failed: All methods failed"
 
@@ -230,14 +195,41 @@ class contentETL:
             raise ImportError("Install python-docx: pip install python-docx")
 
 
-    def extract_html_text(self,file_path):
+    def extract_html_text(self, file_path):
+        """Extract text from HTML files.
+
+        Strategy:
+          1. If the file is a .txt saved by _download_html (pre-scraped), read directly.
+          2. Otherwise use WebScraper.extract() for smart article extraction.
+          3. Fall back to basic BeautifulSoup get_text() if scraper fails.
+        """
+        # Check if a pre-scraped .txt already exists (saved by sources._download_html)
+        txt_path = file_path.rsplit('.', 1)[0] + '.txt'
+        if txt_path != file_path and os.path.exists(txt_path):
+            with open(txt_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+            if text and len(text) >= 100:
+                return text
+
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 html = f.read()
-            soup = BeautifulSoup(html, 'html.parser')
-            return soup.get_text(separator='\n', strip=True)
-        except ImportError:
-            raise ImportError("Install beautifulsoup4: pip install beautifulsoup4")
+        except UnicodeDecodeError:
+            with open(file_path, 'r', encoding='latin-1') as f:
+                html = f.read()
+
+        # Try smart extraction via WebScraper
+        try:
+            from tools.web_scraper import WebScraper
+            result = WebScraper().extract(html)
+            if result['success'] and len(result['text']) >= 100:
+                return result['text']
+        except Exception as e:
+            logger.warning(f"WebScraper extraction failed for {file_path}: {e}")
+
+        # Fallback: basic BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+        return soup.get_text(separator='\n', strip=True)
 
     def extract_audio_text(self, file_path):
         """Extract transcript from audio files using MLX Whisper (M2) or Whisper (CPU)"""
@@ -635,7 +627,8 @@ class contentETL:
             query = """
                 SELECT id, title, transcript, segments, metadata_json 
                 FROM content 
-                WHERE vectorization_status = 'pending' 
+                WHERE vectorization_status = 'pending'
+                  AND (do_not_vectorize = FALSE OR do_not_vectorize IS NULL)
                 ORDER BY created_at DESC 
                 LIMIT ?
             """

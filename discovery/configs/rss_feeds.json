@@ -59,6 +59,48 @@
       "name": "The Robot Report",
       "category": "news",
       "publisher": "The Robot Report"
+    },
+    {
+      "url": "https://spectrum.ieee.org/feeds/feed.rss",
+      "name": "IEEE Spectrum",
+      "category": "news",
+      "publisher": "IEEE Spectrum"
+    },
+    {
+      "url": "https://www.industryweek.com/rss.xml",
+      "name": "IndustryWeek",
+      "category": "news",
+      "publisher": "IndustryWeek"
+    },
+    {
+      "url": "https://www.plantengineering.com/feed/",
+      "name": "Plant Engineering",
+      "category": "news",
+      "publisher": "Plant Engineering"
+    },
+    {
+      "url": "https://www.manufacturingnet.com/rss",
+      "name": "Manufacturing.net",
+      "category": "news",
+      "publisher": "Manufacturing.net"
+    },
+    {
+      "url": "https://www.mckinsey.com/industries/advanced-electronics/our-insights/rss",
+      "name": "McKinsey Advanced Electronics & Manufacturing",
+      "category": "consulting",
+      "publisher": "McKinsey"
+    },
+    {
+      "url": "https://www2.deloitte.com/us/en/insights/industry/manufacturing.rss.xml",
+      "name": "Deloitte Manufacturing Insights",
+      "category": "consulting",
+      "publisher": "Deloitte"
+    },
+    {
+      "url": "https://www.bcg.com/publications.rss",
+      "name": "BCG Perspectives",
+      "category": "consulting",
+      "publisher": "BCG"
     }
   ]
 }

@@ -33,7 +33,7 @@ from discovery.models import (
 from discovery.query_planner import QueryPlanner
 from discovery.candidate_classifier import CandidateClassifier
 from discovery.deduper import Deduper
-from discovery.cache import TaskCache, SourceHealthTracker
+from discovery.cache import TaskCache, SourceHealthTracker, SearchResultCache
 
 logger = logging.getLogger(__name__)
 from logging_config import syslog
@@ -94,11 +94,17 @@ class SourceDiscoveryService:
         from tools.rss_reader import RSSAdapter
         from tools.web_search import WebSearchAdapter
         from tools.github_search import GitHubAdapter
+        from tools.academic_search import AcademicSearchAdapter
+        from tools.institution_search import InstitutionSearchAdapter
+        from tools.stackoverflow_search import StackOverflowAdapter
         
         self.adapters = {
             "rss": RSSAdapter(feed_configs=self.planner.get_rss_feeds()),
             "web": WebSearchAdapter(),
             "github": GitHubAdapter(min_stars=github_min_stars),
+            "academic": AcademicSearchAdapter(),
+            "institution": InstitutionSearchAdapter(),
+            "stackoverflow": StackOverflowAdapter(),
         }
 
         # Deduper
@@ -106,6 +112,9 @@ class SourceDiscoveryService:
 
         # Source health tracker (shared cache.db)
         self.health_tracker = SourceHealthTracker(db_path=cache_db_path)
+
+        # Search result cache (prevents re-querying same API within 24h)
+        self.search_cache = SearchResultCache(db_path=cache_db_path)
 
         # Classifier (optional — skip if no LLM provided)
         self.classifier = None
@@ -128,6 +137,7 @@ class SourceDiscoveryService:
         skip_classification: bool = False,
         rss_only: bool = False,
         max_queries: int = None,
+        max_web_queries: int = None,
     ) -> DiscoveryResult:
         """
         Execute a full discovery run.
@@ -137,7 +147,8 @@ class SourceDiscoveryService:
             topic_filter: Optional topic string to narrow query generation.
             skip_classification: If True, skip LLM classification (useful for testing).
             rss_only: Shortcut to only run RSS feeds (no query planning needed).
-            max_queries: Cap total queries executed (useful for API quota limits).
+            max_queries: Cap total queries executed (deprecated - use max_web_queries).
+            max_web_queries: Cap web adapter queries only (for Tavily quota limits).
 
         Returns:
             DiscoveryResult with approved and rejected candidates.
@@ -160,9 +171,20 @@ class SourceDiscoveryService:
             queries = []
         else:
             queries = self.planner.plan_queries(adapters=adapters, topic_filter=topic_filter)
-            if max_queries and len(queries) > max_queries:
+            
+            # Apply per-adapter query limits
+            if max_web_queries:
+                web_queries = [q for q in queries if q.adapter == "web"]
+                other_queries = [q for q in queries if q.adapter != "web"]
+                if len(web_queries) > max_web_queries:
+                    logger.warning(f"Capping web queries from {len(web_queries)} to {max_web_queries} (Tavily quota)")
+                    web_queries = web_queries[:max_web_queries]
+                queries = web_queries + other_queries
+            elif max_queries and len(queries) > max_queries:
+                # Deprecated global cap - use max_web_queries instead
                 logger.warning(f"Capping queries from {len(queries)} to {max_queries} (max_queries limit)")
                 queries = queries[:max_queries]
+                
         result.queries_generated = len(queries)
         logger.info(f"Generated {len(queries)} search queries")
 
@@ -199,9 +221,43 @@ class SourceDiscoveryService:
 
             print(f"[{i}/{len(queries)}] Searching {query.adapter}: {query.query[:50]}...")
             try:
+                # Check search result cache first
+                cached = self.search_cache.get(query.adapter, query.query)
+                if cached is not None:
+                    # Re-hydrate CandidateSource objects from cached raw dicts
+                    candidates = []
+                    for r in cached:
+                        candidates.append(CandidateSource(
+                            title=r.get("title", ""),
+                            url=r.get("url", ""),
+                            snippet=r.get("snippet", ""),
+                            source_type=r.get("source_type", "unknown"),
+                            publisher=r.get("publisher", ""),
+                            discovered_at=r.get("discovered_at", ""),
+                            adapter=r.get("adapter", query.adapter),
+                            query_used=r.get("query_used", query.query),
+                            raw_metadata=r.get("raw_metadata", {}),
+                        ))
+                    print(f"[{i}/{len(queries)}] Found {len(candidates)} candidates (cached)")
+                    all_candidates.extend(candidates)
+                    continue
+
                 candidates = adapter.search(query)
                 print(f"[{i}/{len(queries)}] Found {len(candidates)} candidates")
                 all_candidates.extend(candidates)
+
+                # Cache the results as serializable dicts
+                if candidates:
+                    cache_data = []
+                    for c in candidates:
+                        cache_data.append({
+                            "title": c.title, "url": c.url,
+                            "snippet": c.snippet, "source_type": c.source_type,
+                            "publisher": c.publisher, "discovered_at": c.discovered_at,
+                            "adapter": c.adapter, "query_used": c.query_used,
+                            "raw_metadata": c.raw_metadata or {},
+                        })
+                    self.search_cache.put(query.adapter, query.query, cache_data)
             except Exception as e:
                 error_msg = f"Adapter {query.adapter} error for '{query.query}': {e}"
                 logger.error(error_msg)
@@ -301,6 +357,7 @@ class SourceDiscoveryService:
             candidate = cc.candidate
             classification = cc.classification
             
+            raw = candidate.raw_metadata or {}
             record = {
                 "url": candidate.url,
                 "title": candidate.title,
@@ -316,7 +373,10 @@ class SourceDiscoveryService:
                 "authority": classification.authority_guess or "unknown",
                 "discovered_at": result.started_at,
                 # Add feed URL for RSS items to enable targeted downloading
-                "feed_url": candidate.raw_metadata.get('feed_url') if candidate.source_type in ['podcast', 'rss'] else None,
+                "feed_url": raw.get('feed_url') if candidate.source_type in ['podcast', 'rss'] else None,
+                # Pass through provider + PDF URL for source-specific ingestion (arXiv, IEEE)
+                "provider": raw.get("provider", ""),
+                "pdf_url": raw.get("pdf_url", ""),
             }
             approved.append(record)
         return approved

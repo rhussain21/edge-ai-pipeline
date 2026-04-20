@@ -36,6 +36,8 @@ psycopg2-binary==2.9.9   # PostgreSQL driver (if using PostgreSQL)
 # ============================================
 faiss-cpu==1.7.4         # Vector similarity search (CPU version for Jetson)
 # For GPU support on Jetson, install via: pip install faiss-gpu
+lancedb>=0.6.0           # LanceDB vector store (Mac-only, for testing / AnythingLLM)
+pyarrow>=14.0.0          # Apache Arrow (required by lancedb)
 sentence-transformers==2.2.2  # Text embeddings
 huggingface-hub==0.19.4   # HuggingFace hub (compatible version)
 torch==2.1.0             # PyTorch (required for sentence-transformers)

@@ -1,0 +1,22 @@
+{
+  "academic_sources": {
+    "arxiv": {
+      "categories": ["cs.RO", "cs.AI", "cs.SY", "eess.SY", "cs.CE"],
+      "search_templates": [
+        "{topic} industrial automation",
+        "{topic} manufacturing systems",
+        "{topic} programmable logic controller",
+        "{standard} implementation"
+      ]
+    },
+    "ieee": {
+      "content_types": ["Conferences", "Journals", "Standards"],
+      "search_templates": [
+        "{topic} industrial control",
+        "{topic} smart manufacturing",
+        "{vendor} {topic} automation",
+        "{standard} compliance testing"
+      ]
+    }
+  }
+}

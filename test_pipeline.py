@@ -135,8 +135,8 @@ def test_content_screening(db):
     # Count pending items before screening
     pending_count = db.query("""
         SELECT COUNT(*) as count FROM content
-        WHERE vectorization_status = 'completed'
-          AND (screening_status = 'pending' OR screening_status IS NULL)
+        WHERE (screening_status = 'pending' OR screening_status IS NULL)
+          AND extraction_status IN ('completed', 'NA')
     """)[0]['count']
 
     if pending_count == 0:

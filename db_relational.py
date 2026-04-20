@@ -171,7 +171,8 @@ class relationalDB:
                     vectorized_at TIMESTAMP,
                     context_window TEXT,
                     enriched_text TEXT,
-                    enrichment_version TEXT
+                    enrichment_version TEXT,
+                    extraction_tool TEXT
                 )
             ''')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type)')
@@ -313,7 +314,8 @@ class relationalDB:
                 vectorized_at TEXT,
                 context_window TEXT,
                 enriched_text TEXT,
-                enrichment_version TEXT
+                enrichment_version TEXT,
+                extraction_tool TEXT
             )
         ''')
         self.con.execute('CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type)')
@@ -412,6 +414,8 @@ class relationalDB:
              "CREATE INDEX IF NOT EXISTS idx_marked_deletion ON content(marked_for_deletion)"),
             ("extraction_status", "ALTER TABLE content ADD COLUMN extraction_status TEXT DEFAULT 'pending'",
              "CREATE INDEX IF NOT EXISTS idx_extraction_status ON content(extraction_status)"),
+            ("do_not_vectorize", "ALTER TABLE content ADD COLUMN do_not_vectorize BOOLEAN DEFAULT FALSE",
+             "CREATE INDEX IF NOT EXISTS idx_do_not_vectorize ON content(do_not_vectorize)"),
         ]
 
         # Rename columns for existing databases (safe: only runs if old column exists)
@@ -444,6 +448,7 @@ class relationalDB:
             ("context_window", "ALTER TABLE signals ADD COLUMN context_window TEXT", None),
             ("enriched_text", "ALTER TABLE signals ADD COLUMN enriched_text TEXT", None),
             ("enrichment_version", "ALTER TABLE signals ADD COLUMN enrichment_version TEXT", None),
+            ("extraction_tool", "ALTER TABLE signals ADD COLUMN extraction_tool TEXT", None),
         ]
 
         for column, alter_sql, index_sql in migrations:
@@ -703,12 +708,14 @@ class relationalDB:
         context_window = getattr(signal, 'context_window', None)
         enriched_text = getattr(signal, 'enriched_text', None)
         enrichment_version = getattr(signal, 'enrichment_version', None)
+        extraction_tool = getattr(signal, 'extraction_tool', None)
         values = (
             signal.signal_type, signal.entity, signal.description,
             signal.industry, getattr(signal, 'impact_level', None),
             signal.confidence, timeline, signal.metadata_json,
             signal.source_content_id,
             context_window, enriched_text, enrichment_version,
+            extraction_tool,
         )
 
         if self.backend == 'postgres':
@@ -719,8 +726,9 @@ class relationalDB:
                         signal_type, entity, description, industry,
                         impact_level, confidence, timeline,
                         metadata_json, source_content_id,
-                        context_window, enriched_text, enrichment_version
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        context_window, enriched_text, enrichment_version,
+                        extraction_tool
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 ''', values)
                 result = cursor.fetchone()
@@ -734,8 +742,9 @@ class relationalDB:
                     id, signal_type, entity, description, industry,
                     impact_level, confidence, timeline,
                     metadata_json, source_content_id,
-                    context_window, enriched_text, enrichment_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    context_window, enriched_text, enrichment_version,
+                    extraction_tool
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (next_id,) + values)
             return next_id
 
@@ -759,14 +768,17 @@ class relationalDB:
         existing = {}
         if ids:
             placeholders = ', '.join(['?' for _ in ids])
-            rows = self.query(f"SELECT id, content_hash FROM content WHERE id IN ({placeholders})", ids)
-            existing = {row['id']: row['content_hash'] for row in rows}
+            rows = self.query(f"SELECT id, content_hash, updated_at FROM content WHERE id IN ({placeholders})", ids)
+            existing = {row['id']: (row['content_hash'], row['updated_at']) for row in rows}
 
         for record in records:
             rid = record.get('id')
-            if rid in existing and existing[rid] == record.get('content_hash'):
-                skipped += 1
-                continue
+            if rid in existing:
+                existing_hash, existing_updated = existing[rid]
+                incoming_updated = record.get('updated_at', '')
+                if existing_hash == record.get('content_hash') and str(existing_updated) >= str(incoming_updated):
+                    skipped += 1
+                    continue
 
             try:
                 self.execute("""

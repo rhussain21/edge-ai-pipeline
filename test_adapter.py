@@ -1,32 +1,38 @@
 #!/usr/bin/env python3
 """
 Adapter test script. Usage:
-    python3 test_rss.py rss
-    python3 test_rss.py web
-    python3 test_rss.py github
+   
+    python3 test_adapter.py rss
+    python3 test_adapter.py web
+    python3 test_adapter.py github
+    python3 test_adapter.py academic
+    python3 test_adapter.py institution
+    python3 test_adapter.py stackoverflow
 """
 
 import sys
 import os
 from unittest.case import skip
 from pprint import pprint
-import source_discovery
-from etl.sources import ContentSources
 
 # Set path FIRST before any local imports
 sys.path.insert(0, os.path.dirname(__file__))
 
 # Device-aware config — loads .env.jetson or .env.mac automatically
 from device_config import config
+from discovery.source_discovery_service import SourceDiscoveryService
+from etl.sources import ContentSources
 
 from tools.rss_reader import RSSAdapter
 from tools.web_search import WebSearchAdapter
 from tools.github_search import GitHubAdapter
+from tools.academic_search import AcademicSearchAdapter
+from tools.institution_search import InstitutionSearchAdapter
+from tools.stackoverflow_search import StackOverflowAdapter
 from discovery.query_planner import QueryPlanner
 from discovery.cache import SourceHealthTracker
 from llm_client import OllamaClient, GeminiClient
-
-from source_discovery import *
+from db_relational import relationalDB
 
 def get_adapter(adapter_type: str, planner: QueryPlanner):
     if adapter_type == "rss":
@@ -35,8 +41,14 @@ def get_adapter(adapter_type: str, planner: QueryPlanner):
         return WebSearchAdapter()
     elif adapter_type == "github":
         return GitHubAdapter(min_stars=5)
+    elif adapter_type == "academic":
+        return AcademicSearchAdapter()
+    elif adapter_type == "institution":
+        return InstitutionSearchAdapter()
+    elif adapter_type == "stackoverflow":
+        return StackOverflowAdapter()
     else:
-        raise ValueError(f"Unknown adapter: {adapter_type}. Choose: rss, web, github")
+        raise ValueError(f"Unknown adapter: {adapter_type}. Choose: rss, web, github, academic, institution, stackoverflow")
 
 
 def test_adapter(adapter_type: str = "web"):
@@ -78,12 +90,13 @@ if __name__ == "__main__":
     sd = SourceDiscoveryService(llm_generate_fn=llm_client.generate, config_dir=config_dir)
     
     # Limit web queries to preserve Tavily quota (1000/month free tier)
-    # max_queries=5 caps total API calls regardless of topic_filter
+    # max_web_queries only caps web adapter, not academic/stackoverflow/etc
+    adapter_type = sys.argv[1] if len(sys.argv) > 1 else "rss"
     results = sd.run(
-        adapters=['rss','web'], 
-        topic_filter="plc programming", 
-        max_queries=5,
-        skip_classification=False
+        adapters=[adapter_type], 
+        topic_filter="LLM manufacturing", 
+        max_web_queries=5,  # Only limits web adapter (Tavily)
+        skip_classification=True
     )
 
 
@@ -92,7 +105,8 @@ if __name__ == "__main__":
     pprint(approved)
     
     health_tracker = SourceHealthTracker()
-    content_downloader = ContentSources(config.MEDIA_DIR, health_tracker=health_tracker)
+    db = relationalDB(config.DB_PATH)
+    content_downloader = ContentSources(config.MEDIA_DIR, db=db, health_tracker=health_tracker)
     
     # Unified download — routes podcasts to RSS matching, web content to direct URL download
     content_downloader.download_approved(approved)

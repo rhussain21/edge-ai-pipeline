@@ -6,7 +6,7 @@ extraction step.  Approved content proceeds to signal extraction; rejected
 content is flagged for future deletion (garbage-collection cron).
 
 Pipeline position:
-    download → extract → vectorize → **screen** → signal extraction
+    download → extract → vectorize → **quality gate** → **LLM screen** → signal extraction
 
 Usage:
     from etl.content_screener import ContentScreener
@@ -17,14 +17,109 @@ Usage:
 
 import json
 import logging
+import re
 import textwrap
 import traceback
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 from logging_config import syslog
 from llm_client import _classify_error
+
+
+# ── Rule-based quality gate (runs before LLM) ─────────────────────────────────
+
+class ContentQualityGate:
+    """Fast, rule-based quality checks — no LLM call needed.
+
+    Catches obviously bad content before spending tokens on LLM screening.
+    Focuses on *content quality* only, not topical relevance (that's the LLM's job).
+    """
+
+    MIN_CHARS = 500
+    MAX_GARBAGE_RATIO = 0.15
+    MIN_TOKEN_DIVERSITY = 0.10
+    MAX_BOILERPLATE_RATIO = 0.40
+
+    # Patterns that indicate broken / stub / gated pages
+    NOISE_PATTERNS = [
+        r'(?i)404\s*(not found|page not found|error)',
+        r'(?i)403\s*forbidden',
+        r'(?i)access denied',
+        r'(?i)page\s*(not|no longer)\s*(found|available|exists)',
+        r'(?i)sign\s*in\s*to\s*(continue|view|access)',
+        r'(?i)login\s*required',
+        r'(?i)subscription\s*required',
+        r'(?i)this\s*video\s*is\s*(un)?available',
+        r'(?i)enable\s*javascript',
+        r'(?i)browser\s*(is\s*)?(not\s*)?supported',
+    ]
+
+    # Common web boilerplate phrases
+    BOILERPLATE_PHRASES = [
+        'cookie policy', 'privacy policy', 'terms of service',
+        'terms of use', 'terms and conditions', 'accept cookies',
+        'subscribe to our newsletter', 'sign up for free',
+        'all rights reserved', 'copyright ©', 'powered by',
+        'share on facebook', 'share on twitter', 'share on linkedin',
+        'click here to', 'read more', 'load more', 'show more',
+        'related articles', 'you may also like', 'recommended for you',
+        'leave a comment', 'leave a reply', 'post a comment',
+    ]
+
+    @classmethod
+    def check(cls, transcript: str, title: str = "") -> Tuple[bool, str]:
+        """Run all quality checks on transcript text.
+
+        Returns
+        -------
+        (passed: bool, reason: str)
+            reason is 'passed' if OK, otherwise a short failure tag.
+        """
+        if not transcript or not transcript.strip():
+            return False, "empty_transcript"
+
+        text = transcript.strip()
+
+        # 1. Minimum length
+        if len(text) < cls.MIN_CHARS:
+            return False, f"too_short ({len(text)} chars < {cls.MIN_CHARS})"
+
+        # 2. Noise / error page detection
+        first_500 = text[:500]
+        for pattern in cls.NOISE_PATTERNS:
+            if re.search(pattern, first_500):
+                return False, f"noise_page ({pattern[:40]})"
+
+        # 3. Garbage ratio (non-printable / non-ASCII)
+        garbage_count = sum(
+            1 for c in text
+            if (ord(c) > 127 and c not in '\u2019\u2018\u201c\u201d\u2013\u2014\u2026')
+            or (ord(c) < 32 and c not in '\n\r\t')
+        )
+        garbage_ratio = garbage_count / len(text)
+        if garbage_ratio > cls.MAX_GARBAGE_RATIO:
+            return False, f"high_garbage ({garbage_ratio:.0%})"
+
+        # 4. Token diversity (unique words / total words)
+        words = re.findall(r'[a-z]{2,}', text.lower())
+        if len(words) >= 20:
+            diversity = len(set(words)) / len(words)
+            if diversity < cls.MIN_TOKEN_DIVERSITY:
+                return False, f"low_diversity ({diversity:.0%})"
+
+        # 5. Boilerplate ratio
+        text_lower = text.lower()
+        boilerplate_hits = sum(
+            text_lower.count(phrase) for phrase in cls.BOILERPLATE_PHRASES
+        )
+        # Approximate: each hit ≈ 30 chars of boilerplate
+        boilerplate_chars = boilerplate_hits * 30
+        if len(text) > 0 and boilerplate_chars / len(text) > cls.MAX_BOILERPLATE_RATIO:
+            return False, f"high_boilerplate ({boilerplate_chars/len(text):.0%})"
+
+        return True, "passed"
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
@@ -108,10 +203,42 @@ class ContentScreener:
         logger.info(f"Screening {len(pending)} content items")
         summary = {"approved": 0, "rejected": 0, "errors": 0, "details": []}
 
+        gate_rejected = 0
         for i, row in enumerate(pending, 1):
             content_id = row["id"]
             title = row.get("title", "Untitled")
+            transcript = row.get("transcript") or ""
             print(f"  [{i}/{len(pending)}] Screening item {content_id}: {title[:50]}...")
+
+            # ── Rule-based quality gate (no LLM cost) ──
+            gate_passed, gate_reason = ContentQualityGate.check(transcript, title)
+            if not gate_passed:
+                decision = {
+                    "decision": "reject",
+                    "reason": f"[quality_gate] {gate_reason}",
+                    "confidence": 1.0,
+                }
+                self._apply_decision(content_id, decision)
+                summary["rejected"] += 1
+                gate_rejected += 1
+                summary["details"].append({
+                    "id": content_id,
+                    "title": title,
+                    "decision": "reject",
+                    "reason": decision["reason"],
+                    "confidence": 1.0,
+                })
+                logger.info(
+                    f"[GATE REJECT] id={content_id} "
+                    f'"{title}" — {gate_reason}'
+                )
+                syslog.info('pipeline', 'quality_gate_reject',
+                            f'Quality gate rejected: {gate_reason}',
+                            content_id=content_id,
+                            details={'reason': gate_reason, 'transcript_length': len(transcript)})
+                continue
+
+            # ── LLM screening (costs tokens) ──
             try:
                 decision = self._screen_one(row)
                 self._apply_decision(content_id, decision)
@@ -168,6 +295,8 @@ class ContentScreener:
                     "error_category": error_cat,
                 })
 
+        if gate_rejected:
+            logger.info(f"Quality gate rejected {gate_rejected} items without LLM call")
         return summary
 
     # ── internals ─────────────────────────────────────────────────────────
@@ -277,6 +406,7 @@ class ContentScreener:
 
         if status == "rejected":
             update_data["marked_for_deletion"] = True
+            update_data["do_not_vectorize"] = True
 
         self.db.update_record(content_id, update_data)
 

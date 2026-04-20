@@ -14,8 +14,8 @@ import json
 import os
 import sqlite3
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -360,3 +360,163 @@ class SourceHealthTracker(_CacheMixin):
             or (r["discovery"]["avg_approval_rate"] is not None
                 and r["discovery"]["avg_approval_rate"] <= (1 - min_rejection_rate))
         ]
+
+
+# ── SearchResultCache ──────────────────────────────────────────────
+
+class SearchResultCache(_CacheMixin):
+    """
+    Caches raw search results from all adapters (arXiv, IEEE, SO, NIST, NSF, web).
+
+    Mac  → shares discovery/cache.db with TaskCache
+    Jetson → table in PostgreSQL industry_signals DB
+
+    Keys: (adapter, query_hash) — deterministic hash of the query string.
+    Values: JSON list of raw result dicts from the provider.
+    TTL: Configurable per-get, defaults to 24 hours.
+
+    This prevents:
+      - Burning arXiv rate limits on repeated queries (3s per request)
+      - Burning Tavily/SO/IEEE API quotas on identical searches
+      - Re-scraping NIST/NSF on the same day
+
+    Usage:
+        cache = SearchResultCache()
+        key = cache.make_key("arxiv", "programmable logic controller")
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        results = provider.search(query)
+        cache.put(key, "arxiv", "programmable logic controller", results)
+    """
+
+    DEFAULT_TTL_HOURS = 24
+
+    def __init__(self, db_path: str = None):
+        self._setup_backend(db_path)
+        self._init_db()
+
+    def _init_db(self):
+        self._create_table("""
+            CREATE TABLE IF NOT EXISTS search_result_cache (
+                adapter      TEXT NOT NULL,
+                query_hash   TEXT NOT NULL,
+                query_text   TEXT,
+                result_json  TEXT NOT NULL,
+                result_count INTEGER NOT NULL DEFAULT 0,
+                created_at   TEXT NOT NULL,
+                PRIMARY KEY (adapter, query_hash)
+            )
+        """)
+        # Index for TTL cleanup
+        self._exec(
+            "CREATE INDEX IF NOT EXISTS idx_src_created ON search_result_cache(created_at)"
+        )
+
+    @staticmethod
+    def make_key(adapter: str, query: str) -> str:
+        """Deterministic hash of adapter+query for cache lookup."""
+        raw = f"{adapter.lower().strip()}:{query.strip()}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+    def get(self, adapter: str, query: str,
+            ttl_hours: float = None) -> Optional[List[Dict[str, Any]]]:
+        """
+        Retrieve cached results if they exist and are within TTL.
+
+        Args:
+            adapter: Adapter name (e.g., "arxiv", "stackoverflow").
+            query: Original query string.
+            ttl_hours: Max age in hours. Default: 24.
+
+        Returns:
+            List of result dicts, or None if not cached / expired.
+        """
+        ttl = ttl_hours if ttl_hours is not None else self.DEFAULT_TTL_HOURS
+        qh = self.make_key(adapter, query)
+        row = self._fetchone(
+            "SELECT result_json, created_at FROM search_result_cache "
+            "WHERE adapter = ? AND query_hash = ?",
+            (adapter.lower(), qh),
+        )
+        if not row:
+            return None
+
+        # Check TTL
+        try:
+            created = datetime.fromisoformat(row[1])
+            if datetime.utcnow() - created > timedelta(hours=ttl):
+                logger.debug(f"Search cache expired for {adapter}:{query[:40]} (age > {ttl}h)")
+                return None
+        except (ValueError, TypeError):
+            return None
+
+        results = json.loads(row[0])
+        logger.debug(f"Search cache HIT {adapter}:{query[:40]} → {len(results)} results")
+        return results
+
+    def put(self, adapter: str, query: str,
+            results: List[Dict[str, Any]]):
+        """
+        Cache search results. Overwrites any existing entry for this adapter+query.
+
+        Args:
+            adapter: Adapter name.
+            query: Original query string.
+            results: List of raw result dicts from the provider.
+        """
+        qh = self.make_key(adapter, query)
+        now = datetime.utcnow().isoformat()
+        result_json = json.dumps(results)
+        params = (adapter.lower(), qh, query[:200], result_json, len(results), now)
+
+        if self._backend == 'postgres':
+            self._exec("""
+                INSERT INTO search_result_cache
+                    (adapter, query_hash, query_text, result_json, result_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (adapter, query_hash) DO UPDATE SET
+                    query_text   = EXCLUDED.query_text,
+                    result_json  = EXCLUDED.result_json,
+                    result_count = EXCLUDED.result_count,
+                    created_at   = EXCLUDED.created_at
+            """, params)
+        else:
+            self._exec("""
+                INSERT OR REPLACE INTO search_result_cache
+                   (adapter, query_hash, query_text, result_json, result_count, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+            """, params)
+
+        logger.debug(f"Search cache PUT {adapter}:{query[:40]} → {len(results)} results")
+
+    def evict_expired(self, ttl_hours: float = None):
+        """Remove entries older than TTL."""
+        ttl = ttl_hours if ttl_hours is not None else self.DEFAULT_TTL_HOURS
+        cutoff = (datetime.utcnow() - timedelta(hours=ttl)).isoformat()
+        self._exec(
+            "DELETE FROM search_result_cache WHERE created_at < ?",
+            (cutoff,),
+        )
+        logger.info(f"Search cache: evicted entries older than {ttl}h")
+
+    def clear(self, adapter: str = None):
+        """Clear cache. If adapter given, clear only that adapter's entries."""
+        if adapter:
+            self._exec(
+                "DELETE FROM search_result_cache WHERE adapter = ?",
+                (adapter.lower(),),
+            )
+        else:
+            self._exec("DELETE FROM search_result_cache")
+
+    def stats(self) -> Dict[str, Any]:
+        """Return cache statistics by adapter."""
+        rows = self._fetchall(
+            "SELECT adapter, COUNT(*), SUM(result_count) "
+            "FROM search_result_cache GROUP BY adapter"
+        )
+        return {
+            row[0]: {"queries_cached": row[1], "total_results": row[2] or 0}
+            for row in rows
+        }

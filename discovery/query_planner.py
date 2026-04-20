@@ -66,6 +66,30 @@ class QueryPlanner:
         """Get a specific config by name (without .json extension)."""
         return self.configs.get(name, {})
 
+    def _filter_topics(self, topic_filter: str = None) -> List[Dict[str, Any]]:
+        """Filter topics by topic_filter. If no match, synthesize a topic from the filter string.
+        
+        This ensures every adapter gets at least some queries even for ad-hoc
+        filter terms like 'Manufacturing AI' that aren't in topics.json.
+        """
+        topics = self.get_config("topics").get("topics", [])
+        if not topic_filter:
+            return topics
+
+        filtered = [t for t in topics if topic_filter.lower() in t.get("name", "").lower()
+                    or topic_filter.lower() in " ".join(t.get("keywords", [])).lower()]
+
+        if filtered:
+            return filtered
+
+        # No topic matched — synthesize one from the filter string
+        logger.info(f"topic_filter '{topic_filter}' matched no configured topic — using as direct query")
+        return [{
+            "name": topic_filter,
+            "keywords": [topic_filter],
+            "github_keywords": [topic_filter.lower().replace(' ', '-')],
+        }]
+
     def plan_queries(self, adapters: List[str] = None, topic_filter: str = None) -> List[SearchQuery]:
         """
         Generate all search queries for the given adapters.
@@ -94,6 +118,19 @@ class QueryPlanner:
             # But we can still generate keyword-filter queries for RSS.
             queries.extend(self._plan_rss_queries(topic_filter))
 
+        if "academic" in adapters:
+            queries.extend(self._plan_academic_queries(topic_filter))
+
+        if "institution" in adapters:
+            queries.extend(self._plan_institution_queries(topic_filter))
+
+        if "stackoverflow" in adapters:
+            queries.extend(self._plan_stackoverflow_queries(topic_filter))
+
+        # Site-scoped web searches (trade pubs, consulting, communities)
+        if "web" in adapters:
+            queries.extend(self._plan_site_scoped_queries(topic_filter))
+
         logger.info(f"QueryPlanner generated {len(queries)} queries for adapters: {adapters}")
         return queries
 
@@ -101,14 +138,9 @@ class QueryPlanner:
         """Generate web search queries from patterns × vendors × topics."""
         patterns = self.get_config("search_patterns").get("web_patterns", [])
         vendors = self.get_config("vendors").get("vendors", [])
-        topics = self.get_config("topics").get("topics", [])
+        topics = self._filter_topics(topic_filter)
         doc_types = self.get_config("doc_types").get("doc_types", [])
         standards = self.get_config("standards").get("standards", [])
-
-        # Apply topic filter
-        if topic_filter:
-            topics = [t for t in topics if topic_filter.lower() in t.get("name", "").lower()
-                      or topic_filter.lower() in " ".join(t.get("keywords", [])).lower()]
 
         queries = []
 
@@ -167,12 +199,8 @@ class QueryPlanner:
 
     def _plan_github_queries(self, topic_filter: str = None) -> List[SearchQuery]:
         """Generate GitHub search queries from topics and vendors."""
-        topics = self.get_config("topics").get("topics", [])
+        topics = self._filter_topics(topic_filter)
         vendors = self.get_config("vendors").get("vendors", [])
-
-        if topic_filter:
-            topics = [t for t in topics if topic_filter.lower() in t.get("name", "").lower()
-                      or topic_filter.lower() in " ".join(t.get("keywords", [])).lower()]
 
         queries = []
 
@@ -203,11 +231,7 @@ class QueryPlanner:
 
     def _plan_rss_queries(self, topic_filter: str = None) -> List[SearchQuery]:
         """Generate RSS keyword-filter queries from topics."""
-        topics = self.get_config("topics").get("topics", [])
-
-        if topic_filter:
-            topics = [t for t in topics if topic_filter.lower() in t.get("name", "").lower()
-                      or topic_filter.lower() in " ".join(t.get("keywords", [])).lower()]
+        topics = self._filter_topics(topic_filter)
 
         queries = []
         for topic in topics:
@@ -218,6 +242,205 @@ class QueryPlanner:
                 tags=topic.get("keywords", [])[:3],
                 limit=20,
             ))
+
+        return queries
+
+    def _plan_academic_queries(self, topic_filter: str = None) -> List[SearchQuery]:
+        """Generate academic search queries from topics, standards, and academic_sources config.
+        
+        Strategy: short keyword queries work best for arXiv's API.
+        Generates 3 types of queries per matched topic:
+          1. Topic name (e.g., "PLC Programming")
+          2. Individual high-value keywords (e.g., "ladder logic", "structured text")
+          3. Related standards by ID only (e.g., "IEC 61131")
+        """
+        topics = self._filter_topics(topic_filter)
+        standards = self.get_config("standards").get("standards", [])
+
+        queries = []
+
+        for topic in topics:
+            topic_name = topic.get("name", "")
+            keywords = topic.get("keywords", [])
+
+            # Query 1: Topic name directly
+            if topic_name:
+                queries.append(SearchQuery(
+                    query=topic_name,
+                    adapter="academic",
+                    source_config=f"academic/topic/{topic_name}",
+                    tags=keywords[:3] + ["academic"],
+                    limit=10,
+                ))
+
+            # Query 2-3: Individual keywords (short, specific terms)
+            for kw in keywords[:3]:
+                queries.append(SearchQuery(
+                    query=kw,
+                    adapter="academic",
+                    source_config=f"academic/keyword/{kw}",
+                    tags=[kw, "academic"],
+                    limit=5,
+                ))
+
+        # Standards queries — only standards matching the topic filter's category
+        matched_categories = set()
+        for topic in topics:
+            topic_name = topic.get("name", "").lower()
+            # Map topic names to standard categories
+            if "plc" in topic_name:
+                matched_categories.add("plc")
+            if "safety" in topic_name:
+                matched_categories.update(["safety"])
+            if "network" in topic_name:
+                matched_categories.add("networking")
+            if "cyber" in topic_name or "security" in topic_name:
+                matched_categories.add("cybersecurity")
+            if "robot" in topic_name:
+                matched_categories.add("robotics")
+            if "scada" in topic_name or "hmi" in topic_name:
+                matched_categories.add("scada")
+            if "process" in topic_name or "batch" in topic_name:
+                matched_categories.add("process")
+            if "manufacturing" in topic_name or "mes" in topic_name:
+                matched_categories.add("mes")
+
+        for std in standards:
+            cat = std.get("category", "")
+            # If no topic filter, include all standards; otherwise filter by category
+            if topic_filter and cat not in matched_categories:
+                continue
+            std_id = std.get("id", "")
+            queries.append(SearchQuery(
+                query=std_id,
+                adapter="academic",
+                source_config=f"academic/standards/{std_id}",
+                tags=["standards", "academic", cat],
+                limit=5,
+            ))
+
+        return queries
+
+    def _plan_institution_queries(self, topic_filter: str = None) -> List[SearchQuery]:
+        """Generate institution search queries from topics and institutions config.
+        
+        Strategy:
+          - Template queries use topic name (e.g. "NIST PLC Programming manufacturing")
+          - Program/directorate queries are paired with topics for relevance
+          - Skip templates with unfilled placeholders
+        """
+        topics = self._filter_topics(topic_filter)
+        inst_cfg = self.get_config("institutions").get("institutions", {})
+
+        queries = []
+        seen = set()
+
+        for inst_name, inst_data in inst_cfg.items():
+            # Template-based queries
+            for template in inst_data.get("search_templates", []):
+                for topic in topics:
+                    query_str = template.replace("{topic}", topic.get("name", ""))
+                    # Skip if unfilled placeholders remain
+                    if "{" in query_str or "}" in query_str:
+                        continue
+                    if query_str == template:
+                        continue
+                    q = query_str.strip()
+                    if q in seen:
+                        continue
+                    seen.add(q)
+                    queries.append(SearchQuery(
+                        query=q,
+                        adapter="institution",
+                        source_config=f"institution/{inst_name}/{topic.get('name', '')}",
+                        tags=topic.get("keywords", [])[:3] + ["institution"],
+                        limit=5,
+                    ))
+
+            # Topic-specific queries for each program/directorate
+            # Pairs program with topic for relevance (instead of generic "manufacturing automation")
+            for program in inst_data.get("programs", []) + inst_data.get("directorates", []):
+                for topic in topics:
+                    q = f"{program} {topic.get('name', '')}".strip()
+                    if q in seen:
+                        continue
+                    seen.add(q)
+                    queries.append(SearchQuery(
+                        query=q,
+                        adapter="institution",
+                        source_config=f"institution/{inst_name}/{program}",
+                        tags=["institution", inst_name],
+                        limit=5,
+                    ))
+
+        return queries
+
+    def _plan_stackoverflow_queries(self, topic_filter: str = None) -> List[SearchQuery]:
+        """Generate Stack Overflow search queries from topics.
+        
+        Uses shorter, tag-friendly queries for better SO API results.
+        Prefers 1-2 word queries over long keyword concatenations.
+        """
+        topics = self._filter_topics(topic_filter)
+
+        queries = []
+        for topic in topics:
+            # Use topic name as primary query (shorter, cleaner)
+            topic_name = topic.get("name", "")
+            keywords = topic.get("keywords", [])
+            
+            if topic_name:
+                # Primary query: just the topic name
+                queries.append(SearchQuery(
+                    query=topic_name,
+                    adapter="stackoverflow",
+                    source_config=f"stackoverflow/{topic_name}",
+                    tags=keywords[:3],  # Tags for filtering
+                    limit=10,
+                ))
+            
+            # Secondary queries: individual high-value keywords
+            for kw in keywords[:2]:  # Only first 2 keywords to avoid spam
+                if len(kw.split()) <= 2:  # Prefer short keywords
+                    queries.append(SearchQuery(
+                        query=kw,
+                        adapter="stackoverflow",
+                        source_config=f"stackoverflow/{topic_name}/{kw}",
+                        tags=[kw] + keywords[:2],
+                        limit=5,
+                    ))
+
+        return queries
+
+    def _plan_site_scoped_queries(self, topic_filter: str = None) -> List[SearchQuery]:
+        """Generate site-scoped web searches from web_search_sites.json.
+
+        These queries use Tavily's include_domains to target specific
+        trade publications, consulting firms, and communities.
+        Time-filtered to last 7 days to save API tokens on weekly runs.
+        """
+        site_cfg = self.get_config("web_search_sites").get("site_searches", [])
+        topics = self._filter_topics(topic_filter)
+
+        queries = []
+        for site in site_cfg:
+            domain = site.get("domain", "")
+            label = site.get("label", domain)
+            if not domain:
+                continue
+
+            for topic in topics[:3]:  # Limit combinations to save tokens
+                query = SearchQuery(
+                    query=f"{topic.get('name', '')} manufacturing automation",
+                    adapter="web",
+                    source_config=f"site_search/{label}",
+                    tags=[site.get("category", ""), topic.get("name", "")],
+                    limit=5,
+                )
+                # Attach extra attributes for WebSearchAdapter to pick up
+                query.days = 7
+                query.include_domains = [domain]
+                queries.append(query)
 
         return queries
 

@@ -19,6 +19,7 @@ class SearchQuery:
     source_config: str  # which config generated it, e.g. "vendors/siemens"
     tags: List[str] = field(default_factory=list)
     limit: int = 10
+    days_back: Optional[int] = None  # Limit results to last N days (adapter-specific)
 
     def to_dict(self) -> dict:
         return asdict(self)

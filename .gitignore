@@ -25,3 +25,5 @@ workflows/backfill_status.py
 notebooks/
 dashboard_data/
 sync_metadata/
+text_markdowns/
+analysis/

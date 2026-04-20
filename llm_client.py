@@ -4,9 +4,43 @@ import json
 import time
 import logging
 import traceback
+import platform
+from pathlib import Path
 from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv
+
+
+def detect_device() -> str:
+    """Detect the current device. Returns: 'jetson', 'mac', or 'linux'."""
+    # Check for Jetson first (most specific)
+    try:
+        if os.path.exists('/proc/device-tree/model'):
+            with open('/proc/device-tree/model', 'r') as f:
+                model = f.read().strip()
+                if 'jetson' in model.lower():
+                    return 'jetson'
+    except Exception:
+        pass
+    if os.path.exists('/etc/nv_tegra_release'):
+        return 'jetson'
+    if platform.system() == 'Darwin':
+        return 'mac'
+    return 'linux'
+
+
+# Load platform-specific .env file
+project_root = Path(__file__).parent
+device = detect_device()
+platform_env = project_root / f'.env.{device}'
+generic_env = project_root / '.env'
+
+if platform_env.exists():
+    load_dotenv(platform_env, override=True)
+elif generic_env.exists():
+    load_dotenv(generic_env, override=True)
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 MAX_RETRIES = 3
 BASE_BACKOFF = 2  # seconds
@@ -101,10 +135,42 @@ class GeminiClient:
         from google import genai
         from google.genai import types
         self.model_name = model
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable not set")
-        self._client = genai.Client(api_key=api_key)
+
+        # Prefer Vertex AI (uses GCP credits) over AI Studio (api_key billing)
+        gcp_project = os.getenv("GCP_PROJECT")
+        gcp_location = os.getenv("GCP_LOCATION", "us-central1")
+
+        if gcp_project:
+            # Vertex AI uses ADC (project + api_key are mutually exclusive)
+            # Try multiple credential paths in case running as different user
+            # (e.g. root on Jetson but gcloud auth done as redwan)
+            adc_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            if not adc_path or not os.path.exists(adc_path):
+                for path in [
+                    "/root/.config/gcloud/application_default_credentials.json",
+                    "/home/redwan/.config/gcloud/application_default_credentials.json",
+                ]:
+                    if os.path.exists(path):
+                        adc_path = path
+                        break
+            if adc_path and os.path.exists(adc_path):
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = adc_path
+            self._client = genai.Client(
+                vertexai=True,
+                project=gcp_project,
+                location=gcp_location,
+            )
+            logger.info(f"Gemini using Vertex AI (project={gcp_project}, location={gcp_location})")
+        else:
+            # Fallback to AI Studio (api_key)
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "Set GCP_PROJECT for Vertex AI or GEMINI_API_KEY for AI Studio"
+                )
+            self._client = genai.Client(api_key=api_key)
+            logger.info("Gemini using AI Studio (api_key)")
+
         self._types = types
 
     def generate(self, prompt, system_prompt, temperature=0.7):

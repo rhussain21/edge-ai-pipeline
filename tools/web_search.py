@@ -176,13 +176,33 @@ class TavilySearchProvider:
             self._client = TavilyClient(api_key=self.api_key)
         return self._client
 
-    def search(self, query: str, limit: int = 10) -> List[dict]:
+    def search(self, query: str, limit: int = 10, days: int = None,
+               include_domains: list = None, exclude_domains: list = None) -> List[dict]:
+        """Search via Tavily API.
+
+        Args:
+            query: Search query string.
+            limit: Max results to return.
+            days: If set, restrict results to the last N days (saves API tokens).
+            include_domains: Optional list of domains to restrict results to.
+            exclude_domains: Optional list of domains to exclude.
+        """
         if not self.api_key:
             logger.error("TAVILY_API_KEY not set")
             return []
         try:
             client = self._get_client()
-            response = client.search(query, max_results=limit, search_depth="basic")
+            kwargs = {
+                "max_results": limit,
+                "search_depth": "basic",
+            }
+            if days is not None:
+                kwargs["days"] = days
+            if include_domains:
+                kwargs["include_domains"] = include_domains
+            if exclude_domains:
+                kwargs["exclude_domains"] = exclude_domains
+            response = client.search(query, **kwargs)
             return [
                 {
                     "title": item.get("title", ""),
@@ -223,7 +243,19 @@ class WebSearchAdapter:
             logger.error("discovery.models not available — cannot normalize results")
             return []
 
-        raw_results = self.provider.search(query.query, limit=query.limit)
+        # Pass time filter and domain scoping if available on the query
+        search_kwargs = {"limit": query.limit}
+        days = getattr(query, 'days', None)
+        if days is not None:
+            search_kwargs["days"] = days
+        include_domains = getattr(query, 'include_domains', None)
+        if include_domains:
+            search_kwargs["include_domains"] = include_domains
+        exclude_domains = getattr(query, 'exclude_domains', None)
+        if exclude_domains:
+            search_kwargs["exclude_domains"] = exclude_domains
+
+        raw_results = self.provider.search(query.query, **search_kwargs)
         candidates = []
         for result in raw_results:
             url = result.get("url", "")

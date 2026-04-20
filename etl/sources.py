@@ -413,7 +413,33 @@ class ContentSources:
         """
         Download a single URL to the appropriate content directory.
         Creates content + content_metadata records in DB (no JSON files).
+        For HTML content, delegates to _download_html for smart scraping.
+        arXiv sources are routed to PDF ingestion instead of HTML scraping.
         """
+        # ── PDF routing ──
+        # arXiv /abs/ pages only contain metadata + abstract, not the full paper.
+        # Route arXiv and any source with a pdf_url to PDF download + text extraction.
+        from tools.pdf_extractor import PDFExtractor
+        pdf_url = (extra_metadata or {}).get('pdf_url', '')
+        is_arxiv = PDFExtractor.is_arxiv_url(url)
+        if is_arxiv and not pdf_url:
+            pdf_url = PDFExtractor.construct_arxiv_pdf_url(url)
+        if is_arxiv or (pdf_url and pdf_url.lower().endswith('.pdf')):
+            result = self._download_pdf_source(
+                source_url=url, pdf_url=pdf_url,
+                title=title, publisher=publisher,
+                adapter=adapter, extra_metadata=extra_metadata,
+            )
+            if result == self._DEDUP_SKIP:
+                return None  # Already processed — silent skip
+            if result:
+                return result
+            if is_arxiv:
+                # Don't fall through to HTML scraper — arXiv /abs/ only has abstract
+                logger.warning(f"PDF extraction failed, skipping: {title}")
+                return None
+            # Non-arXiv PDF failed — fall through to HTML scraper as fallback
+
         print(f"Downloading: {title}")
         try:
             r = requests.get(url, timeout=30, headers={
@@ -422,6 +448,15 @@ class ContentSources:
             r.raise_for_status()
 
             content_type = self._detect_content_type(url, r)
+
+            # Route HTML through smart scraper
+            if content_type in ('html', 'unknown'):
+                html_result = self._download_html(
+                    url, title, publisher, adapter, extra_metadata
+                )
+                if html_result:
+                    return html_result
+                # Fall through to raw download if scraper fails
             type_info = self.CONTENT_TYPE_MAP.get(content_type, self.CONTENT_TYPE_MAP['unknown'])
             target_dir = getattr(self, type_info['dir_attr'])
             ext = type_info['ext']
@@ -670,6 +705,225 @@ class ContentSources:
         
         stats['pending'] = stats['downloaded']
         return stats
+
+    # Sentinel value: _download_pdf_source returns this for dedup (not a failure)
+    _DEDUP_SKIP = "dedup_skip"
+
+    def _download_pdf_source(self, source_url, pdf_url, title, publisher, adapter, extra_metadata=None):
+        """
+        Download a PDF and extract full text (works for any PDF source).
+
+        Saves:
+          - .pdf file in pdf_dir (the actual paper)
+          - .txt file in text_dir (extracted clean text, used as transcript)
+          - DB record with content_type='text', source_type='pdf',
+            transcript=extracted_text
+
+        Returns metadata dict, _DEDUP_SKIP for already-processed items, or None on failure.
+        """
+        from tools.pdf_extractor import PDFExtractor
+
+        # ── Dedup check BEFORE downloading ──
+        publisher_clean = self._sanitize_filename(publisher) if publisher else ''
+        title_clean = self._sanitize_filename(title)
+        if publisher_clean:
+            base_name = f"{publisher_clean}_{title_clean}"
+        else:
+            base_name = title_clean
+        if len(base_name) > 195:
+            base_name = base_name[:195]
+
+        txt_filepath = os.path.join(self.text_dir, f"{base_name}.txt")
+
+        if self.db and self.db.file_exists(txt_filepath):
+            print(f"Already in database: {base_name}.txt")
+            return self._DEDUP_SKIP
+        if os.path.exists(txt_filepath):
+            print(f"Already downloaded: {base_name}.txt")
+            return self._DEDUP_SKIP
+
+        print(f"Downloading PDF: {title}")
+        extractor = PDFExtractor(pdf_dir=self.pdf_dir)
+        result = extractor.download_and_extract(
+            pdf_url=pdf_url, title=title, source_url=source_url,
+        )
+
+        if not result:
+            if self.health_tracker:
+                self.health_tracker.log_download(
+                    source_url=source_url, item_title=title,
+                    adapter=adapter, success=False,
+                    error_type="extraction_failed",
+                    error_msg="PDF download or text extraction failed",
+                )
+            return None
+
+        extracted_text = result["text"]
+        pdf_path = result["pdf_path"]
+
+        # Save clean text
+        with open(txt_filepath, 'w', encoding='utf-8') as f:
+            f.write(extracted_text)
+
+        file_size_mb = round(len(extracted_text.encode('utf-8')) / (1024 * 1024), 2)
+        print(f"PDF extracted [{result['page_count']} pages, {result['char_count']} chars]: {base_name}")
+
+        provider = (extra_metadata or {}).get('provider', '')
+        metadata = self._create_content_metadata(
+            url=source_url, title=title, publisher=publisher,
+            filepath=txt_filepath, content_type='pdf',
+            file_size_bytes=len(extracted_text.encode('utf-8')),
+            extra=extra_metadata,
+        )
+        metadata['source_url'] = source_url
+        metadata['pdf_url'] = result['pdf_url']
+        metadata['pdf_path'] = pdf_path
+        metadata['page_count'] = result['page_count']
+        metadata['source_provider'] = provider
+
+        if self.db:
+            content_data = {
+                'title': title,
+                'content_type': 'text',
+                'source_type': 'pdf',
+                'source_name': publisher or 'unknown',
+                'file_path': txt_filepath,
+                'audio_url': 'N/A',
+                'transcript': extracted_text,
+                'pub_date': (extra_metadata or {}).get('pub_date', ''),
+                'duration_seconds': None,
+                'file_size_mb': file_size_mb,
+                'content_hash': None,
+                'segments': [],
+                'metadata': metadata,
+            }
+            content_id = self.db.add_content_metadata(content_data)
+            if content_id:
+                self.db.add_content_metadata_record(content_id, metadata)
+                print(f"  DB record created: content_id={content_id}")
+        else:
+            metadata_file = txt_filepath.replace('.txt', '_metadata.json')
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+        if self.health_tracker:
+            self.health_tracker.log_download(
+                source_url=source_url, item_title=title,
+                adapter=adapter, success=True, content_type='pdf',
+            )
+
+        return metadata
+
+    def _download_html(self, url, title, publisher, adapter, extra_metadata=None):
+        """
+        Download an HTML page, scrape clean text via WebScraper, and store both.
+
+        Saves:
+          - .html file with raw HTML (for re-processing if needed)
+          - .txt file with extracted clean text (used as transcript by pipeline)
+          - DB record with content_type='html', transcript=clean_text
+
+        Returns metadata dict or None on failure.
+        """
+        from tools.web_scraper import WebScraper
+
+        scraper = WebScraper(timeout=30)
+        result = scraper.scrape(url)
+
+        if not result['success']:
+            logger.warning(f"Scraper failed for {url}: {result['error']}")
+            # Fall back to raw download via _download_url
+            return None
+
+        clean_text = result['text']
+        scraped_meta = result['metadata']
+        page_title = result['title'] or title
+
+        # Build filename
+        publisher_clean = self._sanitize_filename(publisher) if publisher else ''
+        title_clean = self._sanitize_filename(page_title)
+        if publisher_clean:
+            base_name = f"{publisher_clean}_{title_clean}"
+        else:
+            base_name = title_clean
+        if len(base_name) > 195:
+            base_name = base_name[:195]
+
+        # Save clean text as .txt (this is what pipeline reads as transcript)
+        txt_filepath = os.path.join(self.text_dir, f"{base_name}.txt")
+        # Save raw HTML for reference
+        html_filepath = os.path.join(self.text_dir, f"{base_name}.html")
+
+        # Check DB / disk dedup
+        if self.db and self.db.file_exists(txt_filepath):
+            print(f"Already in database: {base_name}.txt")
+            return None
+        if os.path.exists(txt_filepath):
+            print(f"Already downloaded: {base_name}.txt")
+            return None
+
+        # Fetch raw HTML for archival
+        try:
+            r = requests.get(url, timeout=30, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; IndustrySignalsBot/1.0)'
+            })
+            r.raise_for_status()
+            with open(html_filepath, 'w', encoding='utf-8') as f:
+                f.write(r.text)
+        except Exception as e:
+            logger.warning(f"Could not save raw HTML for {url}: {e}")
+
+        # Save clean text
+        with open(txt_filepath, 'w', encoding='utf-8') as f:
+            f.write(clean_text)
+
+        file_size_mb = round(len(clean_text.encode('utf-8')) / (1024 * 1024), 2)
+        print(f"Scraped [{scraped_meta.get('word_count', 0)} words]: {base_name}")
+
+        metadata = self._create_content_metadata(
+            url=url, title=page_title, publisher=publisher,
+            filepath=txt_filepath, content_type='html',
+            file_size_bytes=len(clean_text.encode('utf-8')),
+            extra=extra_metadata,
+        )
+        metadata['scraped_author'] = scraped_meta.get('author', '')
+        metadata['scraped_pub_date'] = scraped_meta.get('pub_date', '')
+        metadata['scraped_description'] = scraped_meta.get('description', '')
+        metadata['raw_html_path'] = html_filepath
+
+        if self.db:
+            content_data = {
+                'title': page_title,
+                'content_type': 'html',
+                'source_type': 'html',
+                'source_name': publisher or scraped_meta.get('domain', 'Unknown'),
+                'file_path': txt_filepath,
+                'audio_url': 'N/A',
+                'transcript': clean_text,
+                'pub_date': scraped_meta.get('pub_date', '')
+                            or (extra_metadata or {}).get('pub_date', ''),
+                'duration_seconds': None,
+                'file_size_mb': file_size_mb,
+                'content_hash': None,
+                'segments': [],
+                'metadata': metadata,
+            }
+            content_id = self.db.add_content_metadata(content_data)
+            if content_id:
+                self.db.add_content_metadata_record(content_id, metadata)
+                print(f"  DB record created: content_id={content_id}")
+        else:
+            metadata_file = txt_filepath.replace('.txt', '_metadata.json')
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+        if self.health_tracker:
+            self.health_tracker.log_download(
+                source_url=url, item_title=page_title,
+                adapter=adapter, success=True, content_type='html',
+            )
+
+        return metadata
 
     def get_file_path(self, content_type, filename, source_name=None):
         clean_filename = self._sanitize_filename(filename)

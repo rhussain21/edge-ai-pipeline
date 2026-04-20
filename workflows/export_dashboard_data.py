@@ -277,18 +277,21 @@ def export_corpus_quality(db) -> dict:
     """)
 
     # Corpus age distribution
+    cutoff_7d = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    cutoff_30d = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    cutoff_90d = (datetime.utcnow() - timedelta(days=90)).isoformat()
     age_dist = db.query("""
         SELECT
             CASE
-                WHEN created_at > DATE('now', '-7 days') THEN 'Last 7 days'
-                WHEN created_at > DATE('now', '-30 days') THEN 'Last 30 days'
-                WHEN created_at > DATE('now', '-90 days') THEN 'Last 90 days'
+                WHEN created_at > ? THEN 'Last 7 days'
+                WHEN created_at > ? THEN 'Last 30 days'
+                WHEN created_at > ? THEN 'Last 90 days'
                 ELSE 'Older'
             END as age_bucket,
             COUNT(*) as count
         FROM content
         GROUP BY age_bucket
-    """)
+    """, [cutoff_7d, cutoff_30d, cutoff_90d])
 
     return {
         'exported_at': datetime.utcnow().isoformat(),
@@ -305,39 +308,39 @@ def export_temporal_data(db) -> dict:
     """Time series data for content and signals."""
     # Content over time (by day)
     content_daily = db.query("""
-        SELECT DATE(created_at) as date, source_type, COUNT(*) as count
+        SELECT CAST(created_at AS DATE) as date, source_type, COUNT(*) as count
         FROM content
         WHERE created_at IS NOT NULL
-        GROUP BY DATE(created_at), source_type
+        GROUP BY CAST(created_at AS DATE), source_type
         ORDER BY date
     """)
 
     # Signals over time
     signals_daily = db.query("""
-        SELECT DATE(extracted_at) as date, signal_type, COUNT(*) as count
+        SELECT CAST(extracted_at AS DATE) as date, signal_type, COUNT(*) as count
         FROM signals
         WHERE extracted_at IS NOT NULL
-        GROUP BY DATE(extracted_at), signal_type
+        GROUP BY CAST(extracted_at AS DATE), signal_type
         ORDER BY date
     """)
 
     # Acceptance/rejection over time
     screening_daily = db.query("""
-        SELECT DATE(screened_at) as date,
+        SELECT CAST(screened_at AS DATE) as date,
                SUM(CASE WHEN screening_status = 'approved' THEN 1 ELSE 0 END) as approved,
                SUM(CASE WHEN screening_status = 'rejected' THEN 1 ELSE 0 END) as rejected
         FROM content
         WHERE screened_at IS NOT NULL
-        GROUP BY DATE(screened_at)
+        GROUP BY CAST(screened_at AS DATE)
         ORDER BY date
     """)
 
     # Cumulative content growth
     cumulative = db.query("""
-        SELECT DATE(created_at) as date, COUNT(*) as count
+        SELECT CAST(created_at AS DATE) as date, COUNT(*) as count
         FROM content
         WHERE created_at IS NOT NULL
-        GROUP BY DATE(created_at)
+        GROUP BY CAST(created_at AS DATE)
         ORDER BY date
     """)
 
@@ -496,7 +499,7 @@ def run_export(args):
     print(f"{'=' * 60}")
     print(f"Output: {output_dir}")
 
-    db = relationalDB(config.DB_PATH)
+    db = relationalDB(config.DB_PATH_ANALYTICS)
 
     # Export all datasets
     datasets = {

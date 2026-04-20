@@ -24,7 +24,8 @@ JETSON_USER = os.getenv('JETSON_USER')
 
 JETSON_PROJECT_DIR = os.getenv("JETSON_PROJECT_DIR")
 
-REL_DB_PATH = os.getenv("REL_DB_PATH", "Database/industry_signals.db")
+# Sync client must always target analytics DB (never test DB)
+REL_DB_PATH = config.DB_PATH_ANALYTICS
 VECTOR_KEY = os.getenv("VECTOR_DB_PATH", "Vectors")
 SYNC_LIMIT = int(os.getenv("SYNC_LIMIT", "1000"))
 SYNC_VECTORS = os.getenv("SYNC_VECTORS", "false").strip().lower() in ("1", "true", "yes", "y")
